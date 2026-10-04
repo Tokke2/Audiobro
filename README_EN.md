@@ -249,15 +249,21 @@ Menu **`Remember`** lists last import/output folders + `Save settings now`. `Hel
 
 > No tracking. No account in the app. Receipt comes directly from PayPal/Ko-fi. Want your name in the README? Add it to the message. Want to stay anonymous? Leave it empty. Want Swish? Tell me the number/QR and I’ll add a `swish://` button.
 
-**Prefer a fixed tier?** (all via the links above — choose any amount you like)
+### 🎁 Choose your support tier — or any amount you like
 
-- ☕ **Coffee** — `39 kr` — thank-you in next release notes
-- 📚 **Book friend** *(most popular)* — `99 kr` — little heart in app + prioritized ideas
-- 🌟 **Hero** — `299 kr` — name in README (if you want) + wishlist priority
+All tiers use the links above — pick any sum you want (one-time or monthly on Ko-fi).
 
-Or open the gorgeous thank-you page in the app: `Help → Support the project` → local file `STÖD_PROJEKTET.html` / `DONATION.html`.
+| Tier | Amount | What you get | Quick link |
+|------|--------|--------------|------------|
+| ☕ **Coffee** | `39 kr` | Thank-you in next release notes + good vibes | **[PayPal 39 kr](https://paypal.me/Rickard3dPrint/39SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
+| 📚 **Book friend** ⭐ *Most popular* | `99 kr` | Little ♥ in the app + your ideas prioritized | **[PayPal 99 kr](https://paypal.me/Rickard3dPrint/99SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
+| 🌟 **Hero** | `299 kr` | Name in README (if you want) + wishlist priority + eternal gratitude | **[PayPal 299 kr](https://paypal.me/Rickard3dPrint/299SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
 
-Thank you — *tack!* ❤️ — every krona counts.
+> **Any amount counts** — 20 kr or 500 kr, one-time or monthly. Every krona keeps the 19999% matching alive.
+> **Swish?** Tell me the number/QR and I’ll add a beautiful `swish://` button here.
+> Or open the full thank-you page in the app: `Help → Support the project` → `DONATION.html`
+
+*Thank you — tack!* ❤️ *You make free audiobooks possible.*
 
 ---
 
