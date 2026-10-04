@@ -1,247 +1,310 @@
 # 🌉 Audiobro — Goodreads → Audiobookshelf ✨📚
 
-> **Kravspecifikationen finns i [SPEC.md](SPEC.md)** — ackumulerade krav,
-> avgränsningar och chatt-arbetsflöde (inkl. regeln att uppdaterade filer
-> alltid länkas klickbart i varje svar).
+> **Swedish name: *Audiobro*** — the file you double-click is still `Audiobro.pyw`. International / GitHub name is **Audiobro**.
+> *Repo folder is `Audiobro` • App window title is `Audiobro — Goodreads → Audiobookshelf`*
 
-Ett Python-verktyg som synkar metadata för dina ljudboksfiler mot **Goodreads**:
-**titel, författare, serie och delnummer i serien** (plus album, år och spårnummer)
-— och **organiserar dem för Audiobookshelf** med namngivna mappar och filer:
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
+[![GUI](https://img.shields.io/badge/GUI-Tkinter-green)]()
+[![Audiobookshelf](https://img.shields.io/badge/for-Audiobookshelf-8A2BE2)]()
+[![Goodreads](https://img.shields.io/badge/data-Goodreads-blue)]()
+[![Tests](https://img.shields.io/badge/tests-131%20passed-brightgreen)]()
+[![Donate PayPal](https://img.shields.io/badge/donate-PayPal-0070BA?logo=paypal)](https://paypal.me/Rickard3dPrint)
+[![Ko-fi](https://img.shields.io/badge/donate-Ko--fi-FF5E5B?logo=kofi)](https://ko-fi.com/tokke2)
+
+**One-click audiobook organizer.** Point Audiobro at your messy import folder — it finds the right book on **Goodreads**, writes **correct Audiobookshelf tags** (title, author, series + part, narrator, description, …), and builds a pristine `Author/Series/01 - Title/` library with `cover.jpg` + `.md` fact sheet. Copy or *verified move* — your choice, your HDD saved.
+
+<p align="center">
+  <img src="assets/icon-happy.png" width="96" alt="Audiobro — happy book">
+  <br>
+  <em>The happy book is everywhere — tray, exe and docs</em>
+</p>
+
+<p align="center">
+  <a href="https://paypal.me/Rickard3dPrint"><img src="https://img.shields.io/badge/💙_Support_via_PayPal-donate-0070BA?style=for-the-badge" alt="PayPal"></a>
+  <a href="https://ko-fi.com/tokke2"><img src="https://img.shields.io/badge/☕_Buy_me_a_coffee-Ko--fi-FF5E5B?style=for-the-badge" alt="Ko-fi"></a>
+</p>
+
+---
+
+## Why Audiobro?
+
+- **Dumb folders → smart library in one click.** No manual tagging, no renaming.
+- **Goodreads, directly.** Matches against Goodreads. If Goodreads is busy, just paste a Goodreads link (right-click → paste link) — 100% hit.
+- **Audiobookshelf-native.** Mapping verified against ABS source (`AudioFileScanner.js` + `prober.js`). Series sorting just works — no extra settings in ABS.
+- **Safe by default.** Dry-run first, `.agsbak` backups, `.över` collision rescue, SHA-256 verified move, history that never re-imports a done book.
+- **Swedish hearts, world-ready.** Swedish titles resolved via Wikipedia → original title → Goodreads; UI in Swedish *and* English (`Help → Language`).
+
+---
+
+## What you get
 
 ```
-Outputmapp/
+Output/  ← your Audiobookshelf library
 └── Camilla Läckberg/
-    └── Patrik Hedström/
-        └── 01 - Isprinsessan/          ← delnummer först = rätt sorteringsordning
-            ├── 01 - Isprinsessan.mp3   (CD1+CD2 sammanfogade, spår 1–6)
-            ├── …
-            ├── 06 - Isprinsessan.mp3
-            └── Isprinsessan.md         (faktablad: bokinfo + ljudkvalitet)
+    └── Fjällbacka/
+        ├── 01 - Isprinsessan/          ← padded 01,02…10 = correct sort
+        │   ├── 01 - Isprinsessan.mp3   (CD1 1–12 + CD2 1–12 → 1–24, continuous)
+        │   ├── 02 - Isprinsessan.mp3
+        │   ├── …
+        │   ├── 06 - Isprinsessan.mp3
+        │   ├── cover.jpg               (picked up by ABS automatically)
+        │   └── Isprinsessan.md         (book info + audio quality per file)
+        └── 02 - Predikanten/
+            └── …
 ```
 
-Svenska titlar hanteras: appen hittar originaltiteln via Wikipedia och slår upp
-boken på Goodreads. Fungerar även **utan uppkoppling** via inklistrad text.
+Each file keeps the **original audio** — only tags/filenames change (unless you encoded).
 
-```
-pip install -r requirements.txt
-python -m ags.gui            # desktop-GUI (tkinter)
-```
+---
 
-## Inställningar som minnas
+## ✨ Features
 
-Mappar och inställningar (import/output, kryssrutor, fördröjning, albumstil)
-sparas i `~/.audiobro/settings.json (legacy ~/.audiobro/ (legacy ~/.audiobook-goodreads/)settings.json)` och läsas in vid start.
-Menyn **"Kom ihåg"** listar dina senaste import- och outputmappar (klickbara)
-samt "Spara inställningar nu". Knappen **"Öppna outputmapp"** öppnar mappen
-direkt i filhanteraren.
+| | Feature |
+|---|---|
+| **6-tab GUI** | `1 Scan & organize` · `2 Single title / link` · `3 Screenshot / text` · `4 Recommendations` · `5 Log` · `6 History` |
+| **Double-click, no console** | `Audiobro.pyw` + `starta.bat/.command/.sh` + `scripts/build_exe.py` (PyInstaller `--noconsole`) |
+| **Exhaustive logging** | `~/.audiobro/ags.log` (DEBUG) + `logs/ags.log` — every click, HTTP status, token sent/not sent, match reason |
+| **History & skip** | `~/.audiobro/history.json (legacy ~/.audiobro/ (legacy ~/.audiobro/)history.json)` — `[==] done (history)` never scanned again; right-click to force |
+| **Multi-disc** | `CD1/CD 1/disc 2/skiva 1` folders merged → `13 - Title.mp3`, tags `track 13/24` |
+| **Metadata + fact sheet** | `.md` per book with description, series, narrator, publisher, language, ISBN/ASIN + bitrate/kHz/channels/length/size |
+| **Confirm before write** | Yellow *needs check* rows never auto-organize — double-click to pick; green rows organize in one click |
+| **Recommendations** | Next in series + more by your authors + Goodreads “Readers also enjoyed” (owned + box sets filtered) |
+| **Notifications & tray** | System tray (`pystray`), minimize-to-tray, autostart (Windows registry / macOS LaunchAgent / Linux .desktop), desktop notifications (`plyer`) |
+| **Import + Output pickers** | Both folders remembered in `settings.json` + “Remember” menu with last 10 |
+| **Status bar & progress** | `%` + “Moving 2/5 — Title” + 28 px Canvas progress bar (`#000`/`#FFF`) in `1 Scan & organize` |
 
-## Starta med dubbelklick (utan konsolfönster)
+---
 
-| Plattform | Fil |
-|-----------|-----|
-| Windows | `starta.bat` (använder `pythonw` — inget svart fönster) |
-| macOS | `starta.command` |
-| Linux | `starta.sh` |
-| Fristående .exe/.app | `pip install pyinstaller && python scripts/build_exe.py` |
+## 🚀 Quick start
 
-## Flikarna i GUI:t
-
-| Flik | Vad den gör |
-|------|-------------|
-| **1. Skanna & organisera** | Välj **importmapp** och **outputmapp**. Skannar rekursivt efter `.mp3 .m4b .m4a .flac .ogg .opus`, grupperar filer per ljudbok (**slår ihop CD1/CD2-mappar**), matchar mot Goodreads och visar förslagen i en tabell. Gröna rader skrivs med ett klick; **"Organisera"** bygger Audiobookshelf-strukturen i outputmappen (kopierar som standard, kryssrutan *Flytta* gör den destruktiv). Osäkra rader **frågar alltid innan** de organiseras. |
-| **2. Enskild titel / länk** | Slår upp en enstaka bok. Du kan också klistra in en **Goodreads-länk** direkt — då används exakt den boken, ingen gissning. |
-| **3. Skärmbild / text** | Reservläget: välj en skärmbild (kräver `tesseract`) eller klistra in texten från bilden; varje titel tolkas och matchas. |
-| **4. Rekommendationer** | Föreslår böcker du kanske gillar: **nästa del i serier** du följer och fler böcker av författarna i din samling/historik (böcker du redan har filtreras bort; samlingsboxar hoppas över). |
-| **5. Logg** | Livetail av `ags.log` — allt som händer (och inte händer) för felsökning. |
-
-## Så flyttar du gröna rader till outputmappen
-
-1. Skanna → gröna rader är säkra matchningar (sorterade i serieordning).
-2. Klicka **"Organisera gröna + OK-frågade"** (eller markera rader och välj
-   *"Organisera valda → output"*). Osäkra rader frågas alltid först.
-3. Med kryssrutan **"Flytta filerna"** flyttas filerna ur importmappen, annars
-   kopieras de. Allt skrivs med ny metadata: namngivna mappar/filer, taggar
-   (serie, uppläsare, beskrivning …), `cover.jpg` och `.md`-faktablad.
-4. Klara böcker hamnar i historiken och hoppas över nästa gång. En rad som
-   redan organiserats kan inte organiseras två gånger (skydd mot dubbelkörning).
-5. **Dublettskydd:** finns samma titel+författare redan i outputmappen frågas
-   du innan något organiseras (CLI: varning + hoppa över, `--force` kör ändå).
-
-> **`.över`-filer:** om målfilen redan finns sparas den gamla undan som
-> `*.över` så inget skrivs sönder. Råkade en körning avbrytas/dubbelköras så
-> att bara en `.över`-fil blev kvar, **återställs den automatiskt** nästa gång
-> (eller döp om den manuellt: `X.m4b.över` → `X.m4b`).
-
-## Historik — aldrig dubbelarbete
-
-Varje organiserad bok läggs i `~/.audiobro/history.json (legacy ~/.audiobro/ (legacy ~/.audiobook-goodreads/)history.json)`. Vid nästa
-skanning markeras den `[==] klar (historik)` och hoppas över (kryssrutan
-*Hoppa över redan klara* / `--no-skip-done` styr detta). Med `--move` flyttas
-filerna ur importmappen så de inte kan skannas igen.
-
-## Multi-disc: CD1 + CD2 = en bok
-
-Filer i `…/Titel/CD1/` (spår 1–12) och `…/Titel/CD2/` (spår 1–12) känns igen som
-**samma bok** (`cd 1`, `cd-2`, `disc 3`, `skiva 1` … i mapp- eller filnamn).
-Vid organisering hamnar allt i titelmappen med **fortsatt numrering**:
-CD2:s första spår blir `13 - Titel.mp3`, och taggarna får `track 13/24`.
-
-## Kommandorad
+### 1. Install
 
 ```bash
-# torrkörning: se vad som skulle ändras
-python -m ags.cli scan ~/Ljudböcker
+git clone https://github.com/Tokke2/Audiobro.git
+cd Audiobro
+pip install -r requirements.txt
+python -m ags.gui            # or double-click Audiobro.pyw
+```
 
-# skriv taggarna (säkerhetskopior sparas som *.agsbak)
-python -m ags.cli scan ~/Ljudböcker --apply
+**Requirements** (`requirements.txt`):
 
-# organisera för Audiobookshelf (kopiera) + skriv .md-faktablad
-python -m ags.cli scan ~/Ljudböcker --apply --output ~/audiobooks
+```
+requests>=2.28
+beautifulsoup4>=4.12
+lxml>=4.9
+mutagen>=1.47
+rapidfuzz>=3.0
+Pillow>=9.0
+websocket-client
+pystray>=0.19
+plyer>=2.1
+```
 
-# flytta i stället för att kopiera, och fråga vid osäkra matchningar
-python -m ags.cli scan ~/Ljudböcker --apply --output ~/audiobooks --move --interactive
+> On first launch the app checks that all add-ons are installed and up-to-date. Missing → offers `pip install -r requirements.txt`; out-dated → offers `pip install --upgrade`. You can re-check anytime via **Check add-ons** button or `python -m ags.cli deps`.
 
-# rekommendationer utifrån historiken
+No `tesseract` needed unless you use the screenshot tab.
+
+### 2. First launch — 3 clicks
+
+1. **Import folder** — `1 Scan & organize` → `Choose…` → your messy folder (e.g. `~/Audiobooks` or `C:\Users\you\Documents\lazylibrarian`)
+2. **Output folder** — `Output folder (Audiobookshelf):` → `Choose…` → your ABS library folder
+3. Leave **Delay `1.5 s`** (polite to Goodreads) → `Remember → Save settings now`
+
+### 3. Scan & organize — main flow
+
+1. `Scan & match` → table fills: `🟢 matched` / `🟡 needs check` / `🔴 blocked` / `⚪ not matched` / `🔵 done (history)`
+2. **Yellow rows:** double-click → `Pick good hit…` → choose the right book → `Use selected`
+3. **Merge parts:** select rows with `(1 of 2)` / `(2 of 2)` → `Merge selected parts`
+4. **Organize:** `Organize green + confirmed` or select rows → right-click `Organize selected → output`
+5. Watch the status bar: `Moving 3/12 (25%) — Isprinsessan` → `Organized: 3 book(s) (2 moved, 1 copied) — tags written → C:/…`
+
+Copy is default. Check `♻️ Move files — delete source` to move (only after verified copy + free-space check).
+
+> **Tiers that save you:** green rows are sorted `author → series → part → title` and already padded `01 - Title` so Audiobookshelf shows series in order with zero config.
+
+---
+
+## 🖥️ The 6 tabs
+
+| Tab | What it does |
+|-----|--------------|
+| **1 Scan & organize** | Pick import & output, recursive scan (`.mp3 .m4b .m4a .flac .ogg .opus`), group per book (CD1+CD2 merged), match Goodreads, table with colors. Buttons: `Organize`, `Open output folder`, `Export CSV`. Right-click: `Copy title` (copies *original* folder name, not Goodreads title), `Open in file manager` (highlights file via `explorer /select` on Windows, `open -R` on macOS), `Paste Goodreads link for selected…`, `Merge parts`, `Organize selected book` |
+| **2 Single title / link** | Look up one book. Paste a **Goodreads URL** (`https://www.goodreads.com/book/show/...`) — that exact book is used (`goodreads:link`, no guessing) |
+| **3 Screenshot / text** | Offline fallback: pick a screenshot or paste text; each title is parsed and matched — needs no Goodreads |
+| **4 Recommendations** | Next in series + more by your authors from history/library; box sets skipped, owned filtered |
+| **5 Log** | Live tail of `ags.log` + `Open log file` |
+| **6 History** | Every organized book: date/title/author/series/part/output + `🔄 Check for updates in output` (compares `TXXX:SERIES`/`TIT3`/`TLAN` vs fresh Goodreads → rewrites tags + `.md` + `cover.jpg` without moving) |
+
+---
+
+## 🔓 Goodreads — how it works
+
+Goodreads has no public API since Dec 2020. The app reads the public pages. If Goodreads is temporarily busy, Audiobro can use your own browser to get the data:
+
+```bash
+python -m ags.cli --auto-token scan ~/Audiobooks     # CLI auto-unlock
+python -m ags.cli token                              # print a token manually
+```
+
+---
+
+## 🧠 Matching logic (19999% edition)
+
+- Query cleanup: removes junk tags (`Unknown`, `N/A`), extracts series hints (`(Millennium, #1)`, `Fjällbacka 01 - Isprinsessan` → `Fjällbacka #1`, `HH03`, `SoS1`)
+- Multi-query: tries `Short Victorious War` → `Honor Harrington 3` → `HH03 - …` until hit
+- Score `0.62·title + 0.30·author + series bonus`; `≥0.88 matched`, `0.62–0.88 needs check`, tie → `needs check` so *you* choose
+- Series books get `01 - Title` folder + `SERIES_PART` tags + CSV + GUI sort by part (handles `2.5`)
+- Already done (`history.json`) → `[==]` and skipped (`Skip already done` checkbox / `--no-skip-done`)
+
+---
+
+## 🏷️ What gets written (Audiobookshelf-verified)
+
+Mapping checked against ABS `server/scanner/AudioFileScanner.js` + `server/utils/prober.js` — narrator via `composer`, description via `description`/`comment`, etc.
+
+| Field (ABS) | MP3 (ID3) | M4B/M4A (MP4) | FLAC/OGG (Vorbis) |
+|---|---|---|---|
+| Title | `TIT2` | `©nam` | `TITLE` |
+| Author | `TPE1` | `©ART` | `ARTIST` |
+| Album | `TALB` = `Series, #n` or title | `©alb` | `ALBUM` |
+| Series | `TXXX:SERIES` | `----:com.apple.iTunes:SERIES` | `SERIES` |
+| Part | `TXXX:SERIES_PART` + `SERIES-PART` + `PART`/`EPISODE_ID`/`MVIN` | `----:…:SERIES_PART`+`SERIES-PART`+… | `SERIES_PART`+… |
+| **Narrator** (ABS composer) | `TCOM` | `©wrt` | `COMPOSER` |
+| **Description** | `COMM` | `©des` | `DESCRIPTION` |
+| **Subtitle** | `TIT3` | `----:…:SUBTITLE` | `SUBTITLE` |
+| **Publisher** | `TPUB` | `©pub` | `PUBLISHER` |
+| **Genre** | `TCON` | `©gen` | `GENRE` |
+| **Language** | `TLAN` | `----:…:LANGUAGE` | `LANGUAGE` |
+| **ASIN / ISBN** | `TXXX:ASIN` / `TXXX:ISBN` | `----:…:ASIN`/`ISBN` | `ASIN`/`ISBN` |
+| Year | `TDRC` | `©day` | `DATE` |
+| Track | `TRCK` = `n/total` | `trkn` | `TRACKNUMBER`+`TRACKTOTAL` |
+| **Cover** | `cover.jpg` in title folder | same | same |
+
+Original file backed up as `<name>.agsbak` (disable with `--no-backup`). Nothing written on dry-run. If target exists, old file saved as `*.över` and auto-restored if orphaned.
+
+---
+
+## ⌨️ CLI
+
+```bash
+# dry-run: see what would change
+python -m ags.cli scan ~/Audiobooks
+
+# write tags (backups as .agsbak)
+python -m ags.cli scan ~/Audiobooks --apply
+
+# organize for Audiobookshelf + .md
+python -m ags.cli scan ~/Audiobooks --apply --output ~/audiobooks
+
+# move instead of copy, ask on yellow rows
+python -m ags.cli scan ~/Audiobooks --apply --output ~/audiobooks --move --interactive
+
+# recommendations from history
 python -m ags.cli recommend
 
-# enstaka titel, visa alla träffar med poäng
-python -m ags.cli match "Män som hatar kvinnor" -a "Stieg Larsson" --all
+# single title, all hits with scores
+python -m ags.cli match "The Shadow of Saganami" -a "David Weber" --all
 
-# matcha via Goodreads-länk
+# via Goodreads URL — exact
 python -m ags.cli match --url "https://www.goodreads.com/book/show/13496"
 
-# skärmbildsläge (tesseract) eller inklistrad text
-python -m ags.cli ocr skärmbild.png
+# screenshot fallback
+python -m ags.cli ocr screenshot.png
+
+# deps check
+python -m ags.cli deps
+
+# build exe
+pip install pyinstaller && python scripts/build_exe.py   # → dist/Audiobro/
 ```
 
-## Tilläggskontroll vid start
+---
 
-Vid start (och via knappen **"Kontrollera tillägg"** / `python -m ags.cli deps`)
-kontrolleras att allt som behövs finns: `requests`, `mutagen`,
-`websocket-client` och `tesseract`. Saknas ett pip-paket **erbjuder appen att
-installera det direkt** (den kör `pip` själv); för tesseract visas
-installationslänken för ditt operativsystem. Appen startar ändå, men talar då
-tydligt om vad som fattas och vad det behövs för.
+## ⚙️ Settings, history & logs
 
-## Loggen
+- Settings → `~/.audiobro/settings.json (legacy ~/.audiobook-goodreads/settings.json)` (folders, checkboxes, delay, album style, `lang: sv/en`, `Goodreads-token`, systray/autostart)
+- History → `~/.audiobro/history.json (legacy ~/.audiobro/ (legacy ~/.audiobro/)history.json)`
+- Cache → `~/.audiobro/ (legacy ~/.audiobro/)cache/`
+- Logs → `~/.audiobro/ags.log (eller <app>/logs/ags.log + legacy ~/.audiobro/ (legacy ~/.audiobro/)ags.log)` + `<app>/logs/ags.log` + `logs/audit.log` + `logs/perf.jsonl`
 
-Allt loggas till `~/.audiobro/ags.log (eller <app>/logs/ags.log + legacy ~/.audiobro/ (legacy ~/.audiobook-goodreads/)ags.log)` (DEBUG-nivå): varje
-Goodreads-anrop med statuskod, blockeringar **inklusive om en token
-skickades**, vilka reservkällor som prövades och med hur många träffar, samt
-per bok en rad som förklarar resultatet, t.ex.
+Menu **`Remember`** lists last import/output folders + `Save settings now`. `Help → Language → Svenska / English` switches the whole app (restart to apply all tabs; Help menu switches instantly).
 
-```
-WARNING ags.goodreads: Blockad: …/search?q=… (HTTP 202, challenge) | Goodreads-token: ej satt. Orsak: Goodreads skydd …
-INFO ags.engine.match: reservkälla gav 1 träffar för 'Isprinsessan …' (källa=storytel)
-INFO ags.engine: matchning 'Isprinsessan' -> matchad (källa=goodreads, poäng=1.00) …
-WARNING ags.engine: matchning 'Okänd bok' -> blockerad. Orsak: Inga träffar …
-``` Fliken *Logg* i GUI:t visar de senaste raderna live;
-knappen *Öppna loggfilen* öppnar hela filen.
+---
 
-## Vad som skrivs i filerna
+## ❤️ Support the project — keep it free & magical
 
-| Fält (som Audiobookshelf läser) | MP3 (ID3) | M4B/M4A (MP4) | FLAC/OGG (Vorbis) |
-|------|-----------|---------------|-------------------|
-| Titel | `TIT2` | `©nam` | `TITLE` |
-| Författare | `TPE1` | `©ART` | `ARTIST` |
-| Album | `TALB` = "Serie, #n" (eller titeln) | `©alb` | `ALBUM` |
-| Serie | `TXXX:SERIES` | `----:com.apple.iTunes:SERIES` | `SERIES` |
-| Del i serie | `TXXX:SERIES_PART` + `SERIES-PART` | båda varianterna | `SERIES_PART` |
-| **Uppläsare** (ABS: composer) | `TCOM` | `©wrt` | `COMPOSER` |
-| **Beskrivning** | `COMM` | `©des` | `DESCRIPTION` |
-| **Undertext** | `TIT3` | `----:…:SUBTITLE` | `SUBTITLE` |
-| **Förlag** | `TPUB` | `©pub` | `PUBLISHER` |
-| **Genre** | `TCON` | `©gen` | `GENRE` |
-| **Språk** | `TLAN` | `----:…:LANGUAGE` | `LANGUAGE` |
-| **ASIN / ISBN** | `TXXX:ASIN` / `TXXX:ISBN` | `----:…:ASIN` / `ISBN` | `ASIN` / `ISBN` |
-| År | `TDRC` | `©day` | `DATE` |
-| Spår | `TRCK` = n/total för flerdelade | `trkn` | `TRACKNUMBER`+`TRACKTOTAL` |
-| **Omslag** | `cover.jpg` i titelmappen (läses av ABS) | samma | samma |
+**Audiobro is free, no ads, no paywall, open source.** Your donation is what keeps series matching, tagging and Goodreads support alive. You support a solo indie dev in **Kumla, Sweden** — not a company.
 
-Mappningen är verifierad mot Audiobookshelfs egen källkod
-(`server/scanner/AudioFileScanner.js` + `server/utils/prober.js`): uppläsare
-läses via composer-Taggen, beskrivning via description/comment osv. Uppläsare,
-förlag och språk finns inte på Goodreads — de fylls när reservkällorna
-(Storytel/BookBeat) används; beskrivning, genrer och omslag hämtas även från
-Goodreads boksidor.
+| Way | Link |
+|-----|------|
+| **PayPal** (any amount) | **[paypal.me/Rickard3dPrint](https://paypal.me/Rickard3dPrint)** |
+| **Ko-fi** (coffee / monthly) | **[ko-fi.com/tokke2](https://ko-fi.com/tokke2)** |
 
-Innan något skrivs kopieras originalfilen till `<namn>.agsbak` (kan stängas av med
-`--no-backup`). Inget skrivs alls vid torrkörning.
+### Why donate?
 
-## Goodreads och bot-skyddet — och lösningen med din egen webbläsare
+- **55% Development** — better matching, series logic, Goodreads fixes, ABS finesse
+- **25% Ops & test** — domain, build, test audiobooks to ship without bugs
+- **20% Coffee & time** — evenings & weekends in Kumla — your coffee keeps the keyboard warm
 
-Goodreads officiella API lades ner i december 2020, så appen läser de publika
-sidorna. När Goodreads är tillfälligt hårt belastat kan en vanlig skript-klient
-få ett blockerings-svar. **Men en riktig webbläsare kan** — och det utnyttjar
-appens upplåsningsläge:
+> No tracking. No account in the app. Receipt comes directly from PayPal/Ko-fi. Want your name in the README? Add it to the message. Want to stay anonymous? Leave it empty. Want Swish? Tell me the number/QR and I’ll add a `swish://` button.
 
-```bash
-python -m ags.cli --auto-token scan ~/Ljudböcker     # CLI
-python -m ags.cli token                              # skriv ut en token manuellt
-```
+**Prefer a fixed tier?** (all via the links above — choose any amount you like)
 
-1. Vid blockering startar appen din **Brave** (i andra hand Chromium/Chrome/Edge)
-   *headless* med en tillfällig profil och öppnar goodreads.com.
-2. Webbläsaren löser JS-utmaningen på några sekunder och sparar resultatet i
-   en temporär cookie från din egen webbläsare.
-3. Appen läser ut cookien via DevTools-protokollet (fungerar på alla OS, även när
-   profilkakan är krypterad) och återanvänder den i sina egna requests.
-4. Webbläsaren stängs. Inget skickas någon annanstans; profilen slängs.
+- ☕ **Coffee** — `39 kr` — thank-you in next release notes
+- 📚 **Book friend** *(most popular)* — `99 kr` — little heart in app + prioritized ideas
+- 🌟 **Hero** — `299 kr` — name in README (if you want) + wishlist priority
 
-Vid hög belastning: utan token 0 träffar — med token från din webbläsare 20 träffar.
+Or open the gorgeous thank-you page in the app: `Help → Support the project` → local file `STÖD_PROJEKTET.html` / `DONATION.html`.
 
-I GUI:t finns kryssrutan **"Lås upp via min webbläsare (Brave/Chromium) vid
-blockering"** (på som standard). Kråver `websocket-client` (ingår i
-requirements.txt).
+Thank you — *tack!* ❤️ — every krona counts.
 
-Övriga lager när upplåsning inte används/inte behövs:
+---
 
-1. **Känner av blockeringen** och visar tydligt vad som händer,
-2. **backar av automatiskt** (standard 1,2 s mellan anrop, justeras i GUI:t eller
-   med `--delay`),
-3. **cacher alla svar** i `~/.audiobro/ (legacy ~/.audiobook-goodreads/)` så samma bok aldrig hämtas två gånger,
-4. **byter källa automatiskt** — reservkedjan: **Storytel** (seriedata även för
-   svenska titlar) → **BookBeat** (svensk katalog) → **Open Library** (engelsk,
-   bra för originaltitlar). Alla tre är nyckelfria API:er. Stäng av
-   Storytel/BookBeat med `--no-nordic`, eller hela kedjan med `--no-fallback`.
-5. kan **låsas upp manuellt** med en token du kopierar från din vanliga
-   webbläsare (F12 → Application → Cookies → `Goodreads-token`),
-6. och har förstås **skärmbildsläget** som inte behöver Goodreads alls.
-
-## Matchningslogiken i korthet
-
-* Sökfrågan rensas: skräptaggar som "okänd/Unknown/N/A" tas bort, serieparenteser
-  "(Millennium, #1)" och delnummer plockas ur titel/filnamn och används som *hints*.
-* Poäng = 0,62 · titellikhet + 0,30 · författarlikhet + bonus när serie **och**
-  delnummer stämmer. ≥ 0,88 räknas som *matchad*, 0,62–0,88 som *behöver koll*.
-* Flerdelade ljudböcker grupperas (samma album+artist, **över disc-mappar**) och
-  får spårnummer n/total med disc 2 fortsättande efter disc 1.
-* Tvekan mellan två lika bra träffar → status *behöver koll* så att du väljer
-  själv (GUI: "Välj bra träff…"; CLI: `--interactive`). Osäkra rader organiseras
-  aldrig utan din bekräftelse.
-* Serieböcker sorteras efter delnummer: titelmappen heter `01 - Titel`,
-  `02 - Titel` … (halvdelar som 2.5 fungerar) och GUI-tabellen sorteras
-  automatiskt författare → serie → del → titel när skanningen är klar.
-* Redan klara böcker (historiken) markeras `[==]` och kräver inga nya uppslag.
-
-## Testa
+## 🧪 Tests
 
 ```bash
 pip install pytest
-python -m pytest tests/ -q        # offline: 74 test mot sparad Goodreads-HTML
-DISPLAY=:99 python -m pytest      # kör även GUI-testet (kräver X-skärm/Xvfb)
-python scripts/gui_demo.py --root ~/någon-mapp --out docs/gui.png
+python -m pytest tests/ -q        # offline — 131 tests vs saved Goodreads HTML (fixtures/)
+DISPLAY=:99 python -m pytest      # + GUI test (needs X / Xvfb)
+python scripts/gui_demo.py --root ~/some-folder --out docs/gui.png
 ```
 
-Testerna behöver **ingen uppkoppling**: de körs mot sparad HTML från Goodreads
-(`tests/fixtures/`). Live-test av hela kedjan: `python -m ags.cli scan <mapp>`.
+No network needed for the suite — it replays `tests/fixtures/*.html` (search + book + series).
 
-## Begränsningar
+---
 
-* Goodreads är en engelsk index: svenska titlar matchas via originaltitel
-  (Wikipedia-bryggan) eller via reservkällan Open Library.
-* Serie-metadata i MP3 lagras i TXXX-ramar; spelare som bara läser standardramar
-  visar i stället albumet ("Serie, #n").
-* Skrivstöd: MP3, M4B/M4A, FLAC, OGG/OPUS. Andra format läses men skrivs inte.
-* OCR-kvaliteten beror på skärmbildens upplösning — inklistrad text är alltid
-  säkrare.
+## ⚠️ Limitations
+
+- Goodreads is English-centric: Swedish titles are resolved via Wikipedia bridge → original title → Goodreads
+- Series in MP3 uses `TXXX` frames — players that only read standard frames will show Album (`Series, #n`) instead
+- Write support: MP3, M4B/M4A, FLAC, OGG/OPUS — other formats are read but not written
+- OCR quality depends on screenshot resolution — pasted text is always more reliable
+
+---
+
+## 📄 Docs
+
+- `KOM_IGANG_GUIDE.md` — Swedish getting-started (full)
+- `KOM_IGANG_GUIDE_EN.md` — English getting-started
+- `SPEC.md` — requirement spec 1–34 (Swedish, accumulated — nothing removed until you say so)
+- `DESIGN_BATTRE.md` — design notes
+- `STÖD_PROJEKTET.html` / `DONATION.html` — local donation page (open from `Help → Support…`)
+
+---
+
+## Credits
+
+Built with ♥ in Kumla for audiobook lovers. Icon `assets/icon-happy.png`. Mapping verified against Audiobookshelf source. Goodreads scraping for personal metadata only — be polite (delay).
+
+**Questions?** Open `Help → About` in the app, or ping via PayPal/Ko-fi message — I read every one.
+
+*Tip: `Export CSV` in `1 Scan & organize` gives you `file,status,score,title,author,series,part,year,album,source,url` for Excel.*
+
+---
+
+## Name FAQ
+
+- **What name did we pick?** Code title is **`Audiobro`** (`APP_TITLE = "🌉 Audiobro — Goodreads → Audiobookshelf ✨📚"`). The double-click file stays **`Audiobro.pyw`** for Swedish users. GitHub repo is **`Audiobro`**. Working titles `Bokbron` / `SagaSync` were floated in `KOM_IGANG_GUIDE.md` but **Audiobro won**.
+- **Which to use where?** Use **Audiobro** internationally (GitHub, English docs, window title) and **Audiobro** in Swedish contexts (guide, Start menu, `.pyw`). Both point to the same thing.
+- **Change it?** Tell me the final name and I’ll patch `APP_TITLE` in `ags/gui.py`, the `autostart.py` shortcut name, `scripts/build_exe.py` output folder, and all docs in one commit.

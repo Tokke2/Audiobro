@@ -1159,7 +1159,7 @@ class App:
         # Tabell och verktyg flyttade till egen flik 3. Granska — egen pack-layout (gammal beprövad, h=1 fix)
         review_parent = getattr(self, "tab_review", parent)
         # Använd pack i Granska-fliken — bottom-paneler först, sedan tree expand (som gamla fungerande)
-        self.detail = tk.Text(review_parent, height=7, wrap="word", bg="#FFFFFF", fg="#000000", relief="flat", bd=1, highlightthickness=1, highlightbackground="#FFDAB9", font=("TkDefaultFont", 10, "bold"), padx=8, pady=6, spacing1=2, spacing3=4)  # FET svart/vit vid tema
+        self.detail = tk.Text(review_parent, height=4, wrap="word", bg="#FFFFFF", fg="#000000", relief="flat", bd=1, highlightthickness=1, highlightbackground="#FFDAB9", font=("TkDefaultFont", 10, "bold"), padx=8, pady=6, spacing1=2, spacing3=4)  # FIX 2026-10-04: h=4 ger 100px mer till tabellen (var 7 → 170px detaljruta → tree bara 8px)
         self.detail.pack(fill="x", side="bottom", padx=6, pady=(0, 4))
         # ④ Organisera — tydligt grupperad verktygsrad med steg-nummer
         bottom = tk.Frame(review_parent, bg=bg, bd=1, relief="solid", highlightbackground=TOK.get("border","#FFE4C4"), highlightthickness=1)
@@ -1196,30 +1196,33 @@ class App:
             style.configure("Treeview.Heading", background="#F0F0F0", foreground="#000000", font=("TkDefaultFont", 9, "bold"))
             style.map("Treeview", background=[("selected", "#D9ECFF")], foreground=[("selected", "#0A1B2A")])
         except: pass
-        # Tabell — direkt i Granska-fliken med pack (gammal beprövad, ingen h=6)
-        self.tree = ttk.Treeview(review_parent, columns=cols, show="headings", height=14, style="Treeview")
+        # Tabell — FIX 2026-10-04 h=8: egen grid-container så tabellen alltid expanderar oavsett pack-ordning/detail-höjd
+        # container expanderar till all ledig yta, tabellen får weight=1 → fyller hela fliken (gamla koden hade tree direkt i parent och led av detail 170px + hdr/hsb → 8px kvar)
+        tree_frame = tk.Frame(review_parent, bg=bg)
+        tree_frame.pack(fill="both", expand=True, padx=6, pady=4)
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14, style="Treeview")
         for key, head, width in presenter.COLUMNS:
             self.tree.heading(key, text=head)
             w = width if width and width >= 50 else 80
             self.tree.column(key, width=w, anchor="w", stretch=True)
-        vsb = ttk.Scrollbar(review_parent, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(review_parent, orient="horizontal", command=self.tree.xview)
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        # Pack-ordning: hsb bottom först, vsb right, sedan tree expand — som gamla koden fast med hsb
-        hsb.pack(side="bottom", fill="x", padx=(6,0))
-        vsb.pack(side="right", fill="y", pady=4)
-        self.tree.pack(side="left", fill="both", expand=True, padx=(6,0), pady=4)
-        # Alias för loggdiagnos
-        table_frame = review_parent
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        # Alias för loggdiagnos (behåll review_parent för bakåtkompat men table_frame pekar på nya containern)
+        table_frame = tree_frame
+        self._tree_frame = tree_frame
         try:
-            # Se till att tabellen ritas — tvinga grid-refresh (gamla koden behövde bara parent update)
             review_parent.update_idletasks()
-            parent.update_idletasks()
-            self.tree.lift()
+            tree_frame.update_idletasks()
             self.tree.update_idletasks()
             if self.tree.winfo_height() <= 1:
                 self.tree.configure(height=14)
-                review_parent.update_idletasks()
+                tree_frame.update_idletasks()
         except: pass
         for tag, col in (("ok", "#1A9E4A"), ("warn", "#E67E22"), ("blocked", "#E74C3C"),
                          ("none", "#95A5A6"), ("done", "#3498DB"), ("dup", "#9B59B6")):
@@ -1231,7 +1234,7 @@ class App:
             self.tree.tag_configure("blocked", background="#FDEDEC")
         except Exception:
             pass
-        self._empty_hint = tk.Label(review_parent, text="✨ Ingen skanning än — dra en mapp hit eller klicka  ✨ Skanna & matcha  🎧\nBörja litet för snabb test, sen hela biblioteket  •  1000000000% bättre tom-läge 💖", bg=getattr(self, "_tokens", {}).get("surface", "white"), fg="#9CA3AF", font=("TkDefaultFont", 11), justify="center")
+        self._empty_hint = tk.Label(tree_frame if "tree_frame" in locals() else review_parent, text="✨ Ingen skanning än — dra en mapp hit eller klicka  ✨ Skanna & matcha  🎧\nBörja litet för snabb test, sen hela biblioteket  •  1000000000% bättre tom-läge 💖", bg=getattr(self, "_tokens", {}).get("surface", "white"), fg="#9CA3AF", font=("TkDefaultFont", 11), justify="center")
         self._empty_hint.place(relx=0.5, rely=0.45, anchor="center")
         def _toggle_empty(*_a):
             try:

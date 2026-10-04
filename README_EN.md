@@ -81,7 +81,7 @@ Each file keeps the **original audio** — only tags/filenames change (unless yo
 ### 1. Install
 
 ```bash
-git clone https://github.com/yourname/Audiobro.git
+git clone https://github.com/Tokke2/Audiobro.git
 cd Audiobro
 pip install -r requirements.txt
 python -m ags.gui            # or double-click Audiobro.pyw
@@ -146,23 +146,6 @@ Goodreads has no public API since Dec 2020. The app reads the public pages. If G
 python -m ags.cli --auto-token scan ~/Audiobooks     # CLI auto-unlock
 python -m ags.cli token                              # print a token manually
 ```
-
-1. If Goodreads is busy, app launches **Brave** (or Chromium/Chrome/Edge) headless with a throwaway profile and opens `goodreads.com`
-2. Your browser opens Goodreads for a few seconds and saves a temporary cookie
-3. App reads the cookie via DevTools (`websocket-client`) — works even when the cookie store is encrypted — and reuses it
-4. Browser closes, profile deleted. Nothing sent elsewhere.
-
-> GUI checkbox **`Unlock via my browser (Brave/Chromium) when blocked`** is on by default.
-
-Other layers:
-- Detects busy responses and logs whether a token was sent
-- Polite backoff (adjustable delay)
-- Caches every response in `~/.audiobro/ (legacy ~/.audiobro/)` so a book is never fetched twice
-- **Goodreads only** — no external fallback needed.
-- **Manual token:** open Goodreads in your browser → copy the token from your browser → paste into `Goodreads-token:` → `Use token`
-- **Per-row escape:** right-click `blocked`/`not matched` → `Paste Goodreads link…` → row becomes `matched 1.00 goodreads:link`
-
-If Goodreads is busy: without token 0 hits → with browser token 20 hits.
 
 ---
 
