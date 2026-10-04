@@ -82,12 +82,14 @@ STRINGS = {
         "merge_parts": "🧩 Slå ihop delar",
         "organize_selected": "📚 Skicka valda → output",
         "organize_green": "🎉 Skicka alla klara → output",
+        "tab_settings": " ⚙️ 1. Inställningar ",
+        "tab_organize": " ✨ 2. Organisera / Granska ",
+        "tab_log": " 📝 3. Logg ",
+        "tab_hist": " 📚 4. Historik ",
         "tab_scan": " ✨ 1. Skanna & organisera ",
         "tab_manual": " 🔗 2. Enskild titel / länk ",
         "tab_ocr": " 📸 3. Skärmbild / text ",
         "tab_reco": " 💡 4. Rekommendationer ",
-        "tab_log": " 📝 5. Logg ",
-        "tab_hist": " 📚 6. Historik ",
         "remember": "Kom ih\u00e5g",
         "save_now": "Spara inst\u00e4llningar nu",
         "recent_import": "Senaste importmappar:",
@@ -217,12 +219,14 @@ STRINGS = {
         "merge_parts": "🧩 Merge parts",
         "organize_selected": "📚 Send selected → output",
         "organize_green": "🎉 Send all ready → output",
+        "tab_settings": " ⚙️ 1. Settings ",
+        "tab_organize": " ✨ 2. Organize / Review ",
+        "tab_log": " 📝 3. Log ",
+        "tab_hist": " 📚 4. History ",
         "tab_scan": " ✨ 1. Scan & organize ",
         "tab_manual": " 🔗 2. Single title / link ",
         "tab_ocr": " 📸 3. Screenshot / text ",
         "tab_reco": " 💡 4. Recommendations ",
-        "tab_log": " 📝 5. Log ",
-        "tab_hist": " 📚 6. History ",
         "remember": "Remember",
         "save_now": "Save settings now",
         "recent_import": "Recent import folders:",
@@ -442,40 +446,51 @@ class App:
         except Exception as exc:
             import logging as _lg
             _lg.getLogger("gui").debug("banner 1B misslyckades: %s", exc)
-        self._build_settings()
-        try:
-            self._build_stepper()
-        except Exception as exc:
-            LOG.debug("stepper misslyckades: %s", exc)
+        # FLIKAR HÖGST UPP — 4 flikar enligt önskemål: 1 Inställningar, 2 Organisera/Granska, 3 Log, 4 Historik
         # Footer först — alltid synlig längst ner (före notebook, annars göms bakom expand)
         TOK_F_pre = getattr(self, "_tokens", {"bg": "#FFFBF5", "bg2":"#FFF4E6", "accent":"#0EA5E9", "border":"#FFE4C4", "text":"#1F2235"})
         _footer_pre = tk.Frame(self.root, bg=TOK_F_pre.get("bg", "#FFFBF5"), bd=0, highlightthickness=0)
         _footer_pre.pack(fill="x", side="bottom", padx=0, pady=0)
-        # placeholder — riktig footer skapas efter _build_* , denna håller plats så pack-ordningen blir rätt
         self._footer_placeholder = _footer_pre
 
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True, padx=8, pady=4)
-        self.tab_scan = ttk.Frame(nb)
-        self.tab_review = ttk.Frame(nb)  # NY 2026-10-04: egen flik för tabellen — 100% mer yta, h=1 fix
-        self.tab_manual = ttk.Frame(nb)
-        self.tab_ocr = ttk.Frame(nb)
-        self.tab_reco = ttk.Frame(nb)
-        self.tab_missing = ttk.Frame(nb)  # dölj för lik layout som skärmbild (6 flikar)
+        # Ny 4-fliks struktur — flikar högst upp direkt under banner
+        self.tab_settings = ttk.Frame(nb)
+        self.tab_organize = ttk.Frame(nb)  # 2. Organisera/Granska — innehåller Scan + Review + Manual som sektioner
         self.tab_log = ttk.Frame(nb)
         self.tab_hist = ttk.Frame(nb)
-        nb.add(self.tab_scan, text=self._t("tab_scan"))
-        nb.add(self.tab_review, text="3. Granska")
-        nb.add(self.tab_manual, text=self._t("tab_manual"))
-        nb.add(self.tab_ocr, text=self._t("tab_ocr"))
-        nb.add(self.tab_reco, text=self._t("tab_reco"))
+        # Behåll gamla refs för bakåtkompat (så _build_scan som använder tab_review funkar)
+        self.tab_scan = self.tab_organize
+        self.tab_review = self.tab_organize  # tabellen ligger nu i samma flik som scan — syns direkt
+        self.tab_manual = ttk.Frame(self.tab_organize)  # sub-frame inuti organize
+        self.tab_ocr = ttk.Frame(self.tab_organize)
+        self.tab_reco = ttk.Frame(self.tab_organize)
+        self.tab_missing = ttk.Frame(nb)
+        nb.add(self.tab_settings, text=self._t("tab_settings"))
+        nb.add(self.tab_organize, text=self._t("tab_organize"))
         nb.add(self.tab_log, text=self._t("tab_log"))
         nb.add(self.tab_hist, text=self._t("tab_hist"))
-        self._build_scan(self.tab_scan)
-        self._build_manual(self.tab_manual)
-        self._build_ocr(self.tab_ocr)
-        self._build_reco(self.tab_reco)
-        # self._build_missing(self.tab_missing)  # dold för att matcha skärmbildens 6 flikar
+        # Bygg flik 1: Inställningar (egen flik)
+        self._build_settings(self.tab_settings)
+        # Flik 2: Organisera/Granska — Scan överst, tabell under, manual/ocr som expanderbara sektioner
+        # Stepper inuti organize-fliken (var tidigare överst) — nu syns den bara där
+        try:
+            self._build_stepper_in_parent(self.tab_organize)
+        except Exception as exc:
+            LOG.debug("stepper i organize misslyckades: %s", exc)
+        self._build_scan(self.tab_organize)
+        # Manual/ocr/reco som inbäddade sektioner i organize (ej egna flikar)
+        try:
+            # Skapa en ram för alternativa vägar under tabellen
+            alt_frame = ttk.LabelFrame(self.tab_organize, text="Alternativa vägar", padding=4)
+            alt_frame.pack(fill="x", padx=6, pady=4)
+            self._build_manual(alt_frame)
+            # OCR och reco döljs men kan byggas om behov finns — vi behåller dem ej i flikraden
+            # self._build_ocr(alt_frame)
+            # self._build_reco(alt_frame)
+        except Exception as _e:
+            LOG.debug("alt_frame build fel: %s", _e)
         self._build_log(self.tab_log)
         self._build_history(self.tab_hist)
         # Status + Progress — 500000M BÅTTRE: alltid synlig progressbar med FET text, svart i ljust/vit i mörkt
@@ -580,6 +595,37 @@ class App:
         self._stepper_hint.pack(side="right", padx=10)
         self._stepper_bar = bar
         self._update_stepper(1)
+
+    def _build_stepper_in_parent(self, parent) -> None:
+        """Stepper inuti en given parent (för Organize-fliken) — flikar högst upp."""
+        try:
+            TOK = getattr(self, "_tokens", {"bg": "#FFFBF5", "border": "#FFE4C4", "accent": "#6EC6FF", "ok": "#2ECC71", "text": "#2B2D42", "text3": "#8A8A9E"})
+            bg = TOK.get("bg", "#FFFBF5")
+            bar = tk.Frame(parent, bg=bg, bd=1, relief="solid", highlightbackground=TOK.get("border","#FFE4C4"), highlightthickness=1)
+            bar.pack(fill="x", padx=10, pady=(6,6))
+            self._stepper_title = tk.Label(bar, text=self._t("stepper_title"), bg=bg, fg=TOK.get("text3","#8A8A9E"), font=("TkDefaultFont", 7, "bold"))
+            self._stepper_title.pack(side="left", padx=10)
+            steps = [("1", self._t("step_choose")), ("2", self._t("step_scan")), ("3", self._t("step_review")), ("4", self._t("step_organize"))]
+            self._stepper_circles.clear(); self._stepper_labels.clear(); self._stepper_lines.clear()
+            for i, (num, label) in enumerate(steps):
+                if i>0:
+                    line = tk.Frame(bar, bg=TOK.get("border","#FFE4C4"), width=28, height=2)
+                    line.pack(side="left", padx=2, pady=14)
+                    self._stepper_lines.append(line)
+                col = tk.Frame(bar, bg=bg)
+                col.pack(side="left", padx=6)
+                circ = tk.Label(col, text=num, bg=TOK.get("border","#FFE4C4"), fg="#5A5A72", font=("TkDefaultFont", 8, "bold"), width=2, height=1, bd=0, relief="flat", padx=4, pady=1)
+                circ.pack(side="left")
+                lbl = tk.Label(col, text=label, bg=bg, fg=TOK.get("text3","#8A8A9E"), font=("TkDefaultFont", 10))
+                lbl.pack(side="left", padx=4)
+                self._stepper_circles.append(circ)
+                self._stepper_labels.append(lbl)
+            self._stepper_hint = tk.Label(bar, text=self._t("stepper_hint"), bg=bg, fg=TOK.get("text3","#8A8A9E"), font=("TkDefaultFont", 9))
+            self._stepper_hint.pack(side="right", padx=10)
+            self._stepper_bar = bar
+            self._update_stepper(1)
+        except Exception as exc:
+            LOG.debug("stepper_in_parent fel: %s", exc)
 
     def _update_stepper(self, step: int) -> None:
         """Markera aktivt steg 1..4 — grön=klar, blå=aktiv, grå=kommande."""
@@ -1057,11 +1103,12 @@ class App:
         except Exception as exc:
             LOG.debug("happy theme 1B misslyckades: %s", exc)
 
-    def _build_settings(self) -> None:
-        # Kompakt layout exakt som skärmbild 132 — en ruta, 4 rader + knapprad
+    def _build_settings(self, parent=None) -> None:
+        # FLIK 1: Inställningar — nu som egen flik högst upp (var tidigare packad överst)
         TOK = getattr(self, "_tokens", {"bg": "#FFFBF5", "border": "#FFE4C4", "surface": "#FFFFFF"})
         bg = TOK.get("bg", "#FFFBF5")
-        outer = tk.Frame(self.root, bg=bg, bd=1, relief="solid", highlightbackground=TOK.get("border","#FFE4C4"), highlightthickness=1)
+        _parent = parent if parent is not None else self.root
+        outer = tk.Frame(_parent, bg=bg, bd=1, relief="solid", highlightbackground=TOK.get("border","#FFE4C4"), highlightthickness=1)
         outer.pack(fill="x", padx=8, pady=(6,4))
         tk.Label(outer, text="Inställningar", bg=outer["bg"], fg=TOK.get("text","#2B2D42"), font=("TkDefaultFont", 9, "bold")).pack(anchor="w", padx=8, pady=(6,2))
         # Rad 1: Fördröjning + token + Album blir + Goodreads blockerad?
