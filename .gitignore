@@ -1,7 +1,82 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.pyo
 .pytest_cache/
-logs/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+
+# Venv
 .venv/
+venv/
+env/
 .env
 audiobro-venv/
+.venv*/
+ENV/
+
+# Logs & cache
+logs/
+*.log
+*.jsonl
+*.out
+.cache/
+*.cache
+audiobro-cache/
+~/.audiobro/
+~/.audiobook-goodreads/
+
+# OS
+.DS_Store
+Thumbs.db
+*.lnk
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+*__pycache__*
+
+# App specifikt — onödiga filer som ej ska i git
+*.zip
+*.7z
+*.rar
+Historik/
+historik/
+archived/
+Arkiv/
+*.bak
+*.agsbak
+Hämtade\ filer*
+Ljudbokssynk.pyw
+# Behåll bara Audiobro.pyw — gamla namnet ska ej i git
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-*
+
+# Test artefakter
+.coverage
+coverage.xml
+*.cover
+.hypothesis/
+junit.xml
+
+# Keep fixtures men ignorera stora temporära
+# tests/fixtures/*.html är OK att behålla (behövs för 131 tester)
+# men ignorera genererade cacher
+tests/.pytest_cache/

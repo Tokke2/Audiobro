@@ -3728,6 +3728,61 @@ class App:
             except: pass
         self._run_bg(job, "Skannar")
 
+    def _force_table_visible(self, iid=None):
+        """566660000% garanti — tabellen MÅSTE synas. Kallas efter varje rad."""
+        try:
+            # Se till att Granska-fliken är vald
+            import tkinter.ttk as _ttk
+            for child in self.root.winfo_children():
+                if isinstance(child, _ttk.Notebook):
+                    try:
+                        child.select(getattr(self, "tab_review", self.tab_scan))
+                    except: pass
+                    break
+            self.root.update_idletasks()
+            if hasattr(self, "_tree_frame") and self._tree_frame.winfo_exists():
+                self._tree_frame.update_idletasks()
+                self._tree_frame.pack_configure(fill="both", expand=True, padx=6, pady=4)
+            if hasattr(self, "tab_review") and self.tab_review.winfo_exists():
+                self.tab_review.update_idletasks()
+            self.tree.update_idletasks()
+            h = self.tree.winfo_height() if self.tree.winfo_exists() else -1
+            # Om fortfarande 8 eller <30, tvinga om — grid vs pack race vid hidden tab
+            if h != -1 and h < 60:
+                try:
+                    # Prova att tvinga höjd via height=0 (auto) och sedan tillbaka till 14 med update
+                    self.tree.configure(height=0)
+                    self.tree.update_idletasks()
+                    self.tree.configure(height=14)
+                    if hasattr(self, "_tree_frame"):
+                        self._tree_frame.grid_rowconfigure(0, weight=1)
+                        self._tree_frame.grid_columnconfigure(0, weight=1)
+                    self.root.update_idletasks()
+                    self.tree.update_idletasks()
+                    h2 = self.tree.winfo_height() if self.tree.winfo_exists() else -1
+                    LOG.debug("_force_table_visible tvingad: h %s -> %s", h, h2)
+                except Exception as _e:
+                    LOG.debug("_force_table_visible tvingad fel: %s", _e)
+            if iid and self.tree.winfo_exists():
+                try:
+                    self.tree.see(iid)
+                    self.tree.selection_set(iid)
+                    # bläddra inte bort — bara se till att den är synlig
+                    self.tree.selection_remove(iid)
+                except: pass
+            # Final log
+            try:
+                rp = getattr(self, "tab_review", None)
+                tf = getattr(self, "_tree_frame", None)
+                LOG.info("TABLE VISIBLE CHECK: review %dx%d tree_frame %dx%d tree %dx%d viewable=%s children=%d", 
+                    rp.winfo_width() if rp and rp.winfo_exists() else -1, rp.winfo_height() if rp and rp.winfo_exists() else -1,
+                    tf.winfo_width() if tf and tf.winfo_exists() else -1, tf.winfo_height() if tf and tf.winfo_exists() else -1,
+                    self.tree.winfo_width() if self.tree.winfo_exists() else -1, self.tree.winfo_height() if self.tree.winfo_exists() else -1,
+                    self.tree.winfo_viewable() if hasattr(self.tree, "winfo_viewable") else "?", len(self.tree.get_children()) if self.tree.winfo_exists() else -1)
+            except: pass
+        except Exception as _e:
+            LOG.debug("_force_table_visible fel: %s", _e)
+
     def _add_row(self, p: Proposal) -> None:
         # EXHAUSTIVE: logga allt som händer vid radinsättning — varför/varför inte
         try:
@@ -3781,10 +3836,11 @@ class App:
                 if isinstance(child, _ttk.Notebook):
                     nb = child
                     break
-            LOG.debug("HEIGHTS: root %dx%d notebook %s review %dx%d tree %dx%d header %dx%d hsb %dx%d detail %dx%d bottom %dx%d outer %dx%d footer %dx%d",
+            LOG.debug("HEIGHTS: root %dx%d notebook %s review %dx%d tree_frame %dx%d tree %dx%d header %dx%d hsb %dx%d detail %dx%d bottom %dx%d outer %dx%d footer %dx%d",
                 self.root.winfo_width(), self.root.winfo_height(),
                 f"{nb.winfo_width()}x{nb.winfo_height()}" if nb and nb.winfo_exists() else "no-nb",
                 rp.winfo_width() if rp and rp.winfo_exists() else -1, rp.winfo_height() if rp and rp.winfo_exists() else -1,
+                tf.winfo_width() if (tf:=getattr(self, "_tree_frame", None)) and tf.winfo_exists() else -1, tf.winfo_height() if tf and tf.winfo_exists() else -1,
                 self.tree.winfo_width() if self.tree.winfo_exists() else -1, self.tree.winfo_height() if self.tree.winfo_exists() else -1,
                 hdr.winfo_width() if 'hdr' in locals() and hdr.winfo_exists() else -1, hdr.winfo_height() if 'hdr' in locals() and hdr.winfo_exists() else -1,
                 hsb.winfo_width() if 'hsb' in locals() and hsb.winfo_exists() else -1, hsb.winfo_height() if 'hsb' in locals() and hsb.winfo_exists() else -1,
@@ -3828,6 +3884,13 @@ class App:
                 LOG.debug("efter tab select: review %dx%d tree %dx%d nb %dx%d", self.tab_review.winfo_width() if self.tab_review.winfo_exists() else -1, self.tab_review.winfo_height() if self.tab_review.winfo_exists() else -1, self.tree.winfo_width() if self.tree.winfo_exists() else -1, self.tree.winfo_height() if self.tree.winfo_exists() else -1, child.winfo_width() if 'child' in locals() and child.winfo_exists() else -1, child.winfo_height() if 'child' in locals() and child.winfo_exists() else -1)
             except Exception as _e:
                 LOG.debug("tab select fel: %s", _e)
+            # 566660000% — tvinga synlighet även om Notebook inte hunnit rita
+            try:
+                self._force_table_visible(iid)
+                self.root.after(200, lambda iid=iid: self._force_table_visible(iid))
+                self.root.after(600, lambda iid=iid: self._force_table_visible(iid))
+            except Exception as _e2:
+                LOG.debug("_force_table_visible call fel: %s", _e2)
         except: pass
         # första raden → steg 3 Granska + växla flik
         if len(self.proposals) == 1:
