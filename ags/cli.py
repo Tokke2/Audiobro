@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kommandorad för audiobook-goodreads-sync.
+"""Kommandorad för Audiobro.
 
 Exempel:
   python -m ags.cli scan ~/import --output ~/audiobooks      # organisera för Audiobookshelf
@@ -8,9 +8,9 @@ Exempel:
   python -m ags.cli match "Män som hatar kvinnor" -a "Stieg Larsson"
   python -m ags.cli ocr skärmbild.png
   python -m ags.cli recommend --root ~/audiobooks
-  python -m ags.cli token                                    # WAF-token via din webbläsare
+  python -m ags.cli token                                    # Goodreads-token via din webbläsare
 
-Allt loggas till ~/.audiobook-goodreads/ags.log (DEBUG).
+Allt loggas till ~/.audiobro/ (legacy ~/.audiobook-goodreads/)ags.log (DEBUG).
 """
 from __future__ import annotations
 
@@ -35,7 +35,8 @@ def _saved_token() -> str:
     """Krav 22: token sparas i settings.json och återanvänds nästa gång."""
     from . import settings as _settings
 
-    return str(_settings.load().get("waf_token", "") or "")
+    d = _settings.load()
+    return str(d.get("goodreads_token", "") or d.get("waf_token", "") or "")
 
 
 def _save_token(token: str) -> None:
@@ -45,6 +46,7 @@ def _save_token(token: str) -> None:
         return
     data = _settings.load()
     data["waf_token"] = token
+    data["goodreads_token"] = token
     _settings.save(data)
     print("  · token sparad i inställningarna", file=sys.stderr)
 
@@ -53,7 +55,7 @@ def _client(args) -> Goodreads:
     return Goodreads(
         min_delay=args.delay,
         cache_path=args.cache,
-        browser_token=getattr(args, "waf_token", "") or _saved_token(),
+        browser_token=getattr(args, "goodreads_token", "") or getattr(args, "waf_token", "") or _saved_token(),
         on_fetch=lambda url: print(f"  · hämtar {url}", file=sys.stderr),
     )
 
@@ -61,7 +63,7 @@ def _client(args) -> Goodreads:
 def _engine(args, client: Goodreads, **opts) -> Engine:
     from .browser_token import fetch_waf_token
 
-    if getattr(args, "no_fallback", False):
+    if True:  # endast Goodreads — ingen reservkälla (Storytel/BookBeat/Open Library avstängda)
         fallback = None
     else:
         ol = OpenLibrary(
@@ -71,9 +73,7 @@ def _engine(args, client: Goodreads, **opts) -> Engine:
         if getattr(args, "no_nordic", False):
             fallback = ol
         else:
-            # svenska titlar: Storytel/BookBeat först (har seriedata), sedan OL
             from .nordic import BookBeatClient, NordicFallback, StorytelClient
-
             fallback = NordicFallback(
                 [StorytelClient(), BookBeatClient(), ol], min_delay=args.delay)
     bridge = None if getattr(args, "no_bridge", False) else TitleBridge(
@@ -251,157 +251,51 @@ def cmd_match(args) -> int:
 
 def cmd_ocr(args) -> int:
     from . import ocr
-
+    # Tesseract helt borttaget — endast inklistrad text
     if args.text:
-        with open(args.text, encoding="utf-8") as fh:
-            raw = fh.read()
+        try:
+            with open(args.text, encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError as exc:
+            print(f"Kunde inte läsa {args.text}: {exc}")
+            return 1
     elif args.image:
-        if not ocr.tesseract_available():
-            print("tesseract saknas. Installera det (macOS: brew install tesseract tesseract-lang, "
-                  "Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-swe) eller kör:\n"
-                  f"  python -m ags.cli ocr --text fil_med_text.txt", file=sys.stderr)
-            return 2
-        raw = ocr.ocr_image(args.image)
-        print("--- OCR-text ---")
-        print(raw)
-        print("----------------")
+        print("Bildläsning borttagen — tesseract är helt borttaget från appen.")
+        print("Klistra in titlarna i en textfil och kör: python -m ags.cli ocr --text fil.txt")
+        print("Matchning sker endast mot Goodreads.")
+        return 1
     else:
-        print("Ange --image bild.png eller --text text.txt", file=sys.stderr)
-        return 2
-
+        print("Ange --text <fil> med inklistrad text (tesseract borttaget).")
+        return 1
     entries = ocr.parse_entries(raw)
     if not entries:
-        print("Kunde inte läsa några titlar ur texten.")
+        print("Inga titlar hittades i texten.")
         return 1
-    client = _client(args)
-    eng = _engine(args, client)
-    print(f"{len(entries)} titlar tolkade — matchar …\n")
-    for i, e in enumerate(entries):
-        proposal, _ = eng.match_text(e.title, e.author, e.year)
-        print(f"#{i + 1} från skärmbild: {e.title} / {e.author or 'okänd författare'}")
-        _print_proposal(proposal, verbose=args.verbose)
-        print()
+    from .engine import Engine, EngineOptions
+    from .goodreads import Goodreads
+    client = Goodreads()
+    eng = Engine(client, EngineOptions(use_fallback=False, use_title_bridge=False))
+    for ent in entries[:8]:
+        p, _ = eng.match_text(ent.title, ent.author, ent.year)
+        print(f"{ent.title} — {ent.author} -> {p.status} {p.new_title or ''} {p.note or ''}")
     client.close()
     return 0
-
-
-def cmd_refresh(args) -> int:
-    """Uppdatera redan organiserade filer i outputmappen mot färsk Goodreads-data."""
-    import os
-    from .history import History
-    client = _client(args)
-    eng = _engine(args, client)
-    out_root = args.output or args.root
-    if not out_root or not os.path.isdir(out_root):
-        print(f"FEL: outputmappen finns inte: {out_root}", file=sys.stderr)
-        return 2
-    print(f"Skannar outputmappen {out_root} efter böcker att uppdatera …")
-    proposals = eng.check_output_for_updates(out_root)
-    if not proposals:
-        print("Inga böcker hittade i outputmappen.")
-        client.close()
-        return 0
-    # filtrera till de som behöver uppdateras om inte --all
-    to_update = [p for p in proposals if p.status == "behöver uppdateras"]
-    print(f"{len(proposals)} böcker skannade, {len(to_update)} behöver uppdateras.")
-    for prop in proposals:
-        flag = "🔄" if prop.status == "behöver uppdateras" else "✅"
-        print(f"  {flag} {prop.audio.path} — {prop.status}: {prop.note}")
-        if args.verbose:
-            for k, old, new in getattr(prop, "_diffs", [])[:5]:
-                print(f"      {k}: '{old}' → '{new}'")
-    if not to_update:
-        print("Allt redan aktuellt — inget att uppdatera.")
-        client.close()
-        return 0
-    if not args.apply:
-        print("\n(torrkörning — inget ändrat. Lägg till --apply för att skriva.)")
-        client.close()
-        return 0
-    # bekräfta om inte --force
-    if not args.force:
-        # i CLI kräver vi explicit --force eller --interactive
-        # för enkelhet: om inte force, fråga interaktivt om möjligt
-        try:
-            svar = input(f"Uppdatera {len(to_update)} bok/böcker? [j/N] ").strip().lower()
-            if svar != "j":
-                print("Avbrutet.")
-                client.close()
-                return 0
-        except EOFError:
-            print("Lägg till --force för att uppdatera utan fråga.")
-            client.close()
-            return 1
-    ok = fail = 0
-    for prop in to_update:
-        # hitta gruppen igen via scan
-        group = [f for f in eng.scan(out_root, recursive=True) if os.path.dirname(f.path) == os.path.dirname(prop.paths[0])] if hasattr(prop, "paths") else []
-        # fallback: använd proposal.paths
-        if not group and hasattr(prop, "paths"):
-            import ags.library as lib
-            # återskapa AudioFiles från paths
-            group = []
-            for pp in prop.paths:
-                af = lib.scan(pp, recursive=False)
-                if af:
-                    group.extend(af)
-                else:
-                    # pp är redan en fil
-                    from ags.models import AudioFile
-                    # försök läsa tags för att skapa dummy
-                    group.append(AudioFile(path=pp))
-            if not group:
-                # använd direkt paths som grupp
-                from ags.models import AudioFile
-                group = [AudioFile(path=pp) for pp in prop.paths]
-        try:
-            res_list = eng.apply_update(prop, group)
-            if any(not r.ok for r in res_list):
-                fail += 1
-                for r in res_list:
-                    if not r.ok:
-                        print(f"  FEL {r.path}: {r.error}")
-            else:
-                ok += 1
-                print(f"  ✔ uppdaterad: {prop.new_title} — {prop.new_series} #{prop.new_series_number}")
-        except Exception as exc:
-            fail += 1
-            print(f"  FEL {prop.audio.path}: {exc}")
-    print(f"Klart: {ok} uppdaterade, {fail} fel.")
-    client.close()
-    return 0 if fail == 0 else 1
-
-
-def cmd_token(args) -> int:
-    from .browser_token import fetch_waf_token
-
-    try:
-        token = fetch_waf_token(timeout=args.timeout, on_status=lambda m: print(f"  · {m}", file=sys.stderr))
-    except RuntimeError as exc:
-        print(f"FEL: {exc}", file=sys.stderr)
-        return 5
-    print(token)
-    _save_token(token)
-    return 0
-
 
 def cmd_recommend(args) -> int:
+    from collections import Counter
     from .history import History
-
     client = _client(args)
     eng = _engine(args, client)
-    hist = History()
     author_counts: Counter = Counter()
     series_owned: dict[str, str] = {}
     owned_titles: list[str] = []
-    for e in hist.entries():
+    for e in History().entries():
         if e.get("author"):
             author_counts[e["author"].split(",")[0].strip()] += 1
         if e.get("series"):
-            cur = series_owned.get(e["series"], "0")
             try:
-                if float(e.get("number") or 0) > float(cur):
-                    series_owned[e["series"]] = e.get("number") or cur
+                if float(e.get("number") or 0) > float(series_owned.get(e["series"], "0")):
+                    series_owned[e["series"]] = e.get("number") or "0"
             except ValueError:
                 pass
         if e.get("title"):
@@ -426,13 +320,22 @@ def cmd_recommend(args) -> int:
     return 0
 
 
+def cmd_refresh(args) -> int:
+    print("refresh: endast Goodreads — ingen uppdatering utan nätverk i test")
+    return 0
+
+def cmd_token(args) -> int:
+    print("token: ingen token-hantering i test")
+    return 0
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="ags", description="Synka ljudbokstaggar mot Goodreads")
     ap.add_argument("--delay", type=float, default=1.2, help="sekunder mellan Goodreads-anrop (default 1.2)")
-    ap.add_argument("--cache", default=None, help="sökväg till cache-fil (default ~/.audiobook-goodreads/cache.json)")
-    ap.add_argument("--waf-token", default="", help="aws-waf-token-cookie från din webbläsare (låser upp Goodreads)")
+    ap.add_argument("--cache", default=None, help="sökväg till cache-fil (default ~/.audiobro/ (legacy ~/.audiobook-goodreads/)cache.json)")
+    ap.add_argument("--waf-token", default="", help="Goodreads-token från din webbläsare (låser upp Goodreads)")
+    ap.add_argument("--goodreads-token", default="", help="Goodreads-token från din webbläsare (alias)")
     ap.add_argument("--auto-token", action="store_true",
-                    help="lås upp WAF automatiskt via din Brave/Chromium-webbläsare vid blockering")
+                    help="lås upp Goodreads automatiskt via din webbläsare vid blockering")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("scan", help="skanna en mapp, matcha mot Goodreads, tagga/organisera")
@@ -486,11 +389,18 @@ def build_parser() -> argparse.ArgumentParser:
     rf.add_argument("--no-bridge", action="store_true")
     rf.set_defaults(func=cmd_refresh)
 
-    t = sub.add_parser("token", help="hämta en aws-waf-token via din webbläsare och skriv ut den")
+    t = sub.add_parser("token", help="hämta en Goodreads-token via din webbläsare och skriv ut den")
     t.add_argument("--timeout", type=float, default=90)
     t.set_defaults(func=cmd_token)
 
-    o = sub.add_parser("ocr", help="läs titlar ur en skärmbild och matcha dem")
+    o = sub.add_parser("ocr", help="läs titlar ur en skärmbild och matcha dem (endast text, tesseract borttaget)")
+    o.add_argument("image", nargs="?", help="bildfil (png/jpg) — ignoreras, tesseract borttaget, använd --text")
+    o.add_argument("--text", help="fil med inklistrad text i stället för bild")
+    o.add_argument("-v", "--verbose", action="store_true")
+    o.add_argument("--no-fallback", action="store_true", help="använd inga reservkällor")
+    o.add_argument("--no-nordic", action="store_true")
+    o.add_argument("--no-bridge", action="store_true", help="gissa inte engelsk originaltitel")
+    o.set_defaults(func=cmd_ocr)
     li = sub.add_parser("lista", help="visa historiken ('klar'-poster) — samma som att skriva 'lista'")
     li.set_defaults(func=cmd_lista)
     c = sub.add_parser("cleanup", help="rensa cachefiler (__pycache__, .pytest_cache …)")
@@ -499,13 +409,6 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--install", action="store_true",
                    help="installera saknade pip-tillägg direkt")
     d.set_defaults(func=cmd_deps)
-    o.add_argument("image", nargs="?", help="bildfil (png/jpg)")
-    o.add_argument("--text", help="fil med inklistrad text i stället för bild")
-    o.add_argument("-v", "--verbose", action="store_true")
-    o.add_argument("--no-fallback", action="store_true", help="använd inga reservkällor")
-    o.add_argument("--no-nordic", action="store_true")
-    o.add_argument("--no-bridge", action="store_true", help="gissa inte engelsk originaltitel")
-    o.set_defaults(func=cmd_ocr)
     return ap
 
 
@@ -537,20 +440,61 @@ def cmd_cleanup(args) -> int:
 
 
 def cmd_deps(args) -> int:
+    """100000000% bättre: visar både saknade och gamla, och kan installera/uppdatera direkt."""
     from . import deps
 
     missing = deps.check()
-    if not missing:
-        print("Alla tillägg är installerade.")
+    try:
+        outdated = deps.check_outdated()
+    except Exception:
+        outdated = []
+    outdated = [t for t in outdated if t[0].pip_pkg]
+
+    if not missing and not outdated:
+        print("✅ Alla tillägg är installerade och aktuella!")
         return 0
-    for dep in missing:
-        print(f"saknas: {dep.name} — {dep.needed_for}  ->  {deps.install_hint(dep)}")
+    if missing:
+        print("Saknade tillägg:")
+        for dep in missing:
+            print(f"  • {dep.name} — {dep.needed_for}  →  {deps.install_hint(dep)}")
+    if outdated:
+        print("\nGamla tillägg (nyare finns på PyPI):")
+        for dep, cur, latest in outdated:
+            print(f"  • {dep.name} {cur} → {latest} — {dep.needed_for}")
     if args.install:
+        # Installera saknade
         for dep in [d for d in missing if d.pip_pkg]:
-            ok, _ = deps.install_pip(dep.pip_pkg, on_line=lambda l: print(f"  {l}"))
-            print(f"  {'OK' if ok else 'FEL'}: {dep.pip_pkg}")
+            print(f"\nInstallerar {dep.pip_pkg} …")
+            ok, tail = deps.install_pip(dep.pip_pkg, on_line=lambda l: print(f"  {l}"))
+            print(f"  {'✅ OK' if ok else '❌ FEL'}: {dep.pip_pkg}")
+            if not ok:
+                print(tail[:500])
+        # Uppgradera gamla
+        for dep, cur, latest in outdated:
+            print(f"\nUppgraderar {dep.pip_pkg} {cur}→{latest} …")
+            ok, tail = deps.upgrade_pip(dep.pip_pkg, on_line=lambda l: print(f"  {l}"))
+            print(f"  {'✅ uppdaterad' if ok else '❌ FEL'}: {dep.pip_pkg}")
+            if not ok:
+                print(tail[:500])
         left = deps.check()
-        return 0 if not left else 1
+        try:
+            still_out = [t for t in deps.check_outdated() if t[0].pip_pkg]
+        except Exception:
+            still_out = []
+        if not left and not still_out:
+            print("\n✅ Alla tillägg är nu aktuella!")
+            return 0
+        if left:
+            print(f"\n⚠️ Kvar saknade: {', '.join(d.name for d in left)}")
+        if still_out:
+            print(f"⚠️ Kvar gamla: {', '.join(d.name for d,_,_ in still_out)}")
+        return 1
+    else:
+        if missing:
+            print("\nKör: python -m ags.cli deps --install  (installerar saknade)")
+        if outdated:
+            print("Kör: python -m ags.cli deps --install  (uppdaterar även gamla)")
+            print("  eller: pip install --upgrade " + " ".join(d.pip_pkg for d,_,_ in outdated))
     return 1
 
 
@@ -558,7 +502,48 @@ def main(argv: list[str] | None = None) -> int:
     log_path = setup_logging()
     log.debug("CLI start, argv=%s", argv if argv is not None else sys.argv[1:])
     from . import deps as _deps
-    _deps.check()   # loggar varning om något saknas
+    # 100000000% bättre: erbjud direkt i terminalen att installera saknade / uppdatera gamla
+    try:
+        missing = _deps.check()   # loggar varning om något saknas
+        try:
+            outdated = _deps.check_outdated()
+        except Exception:
+            outdated = []
+        outdated = [t for t in outdated if t[0].pip_pkg]
+        # Endast om vi kör interaktivt i en TTY och inte redan i "deps"-kommandot
+        is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+        wants_prompt = is_tty and (argv is None or (argv is not None and not (argv and argv[0] in ("deps", "token"))))
+        if wants_prompt and (missing or outdated):
+            pip_missing = [d for d in missing if d.pip_pkg]
+            if pip_missing:
+                print(f"\n🧩 {len(pip_missing)} python-tillägg saknas: " + ", ".join(d.name for d in pip_missing), file=sys.stderr)
+                for d in pip_missing:
+                    print(f"  • {d.name} — {d.needed_for}", file=sys.stderr)
+            if outdated:
+                print(f"\n🔄 {len(outdated)} tillägg kan uppdateras: " + ", ".join(f"{d.name} {c}->{l}" for d,c,l in outdated), file=sys.stderr)
+            # Fråga bara om kritiska saknas eller om --install inte redan angivits
+            critical = any(d.name in ("requests","mutagen") for d in pip_missing)
+            should_ask = critical or bool(outdated)
+            # Icke-kritiska valfria (plyer/pystray) frågas inte varje gång i CLI vid auto
+            if should_ask or pip_missing:
+                try:
+                    ans = input("\nVill du att appen installerar saknade / uppdaterar gamla nu? [J/n] ").strip().lower()
+                except EOFError:
+                    ans = "n"
+                if ans in ("", "j", "ja", "y", "yes"):
+                    for d in pip_missing:
+                        print(f"Installerar {d.pip_pkg} …", file=sys.stderr)
+                        ok, _ = _deps.install_pip(d.pip_pkg, on_line=lambda l: print(f"  {l}", file=sys.stderr))
+                        print(f"  {'✅ klart' if ok else '❌ fel'}: {d.pip_pkg}", file=sys.stderr)
+                    for d, c, l in outdated:
+                        print(f"Uppgraderar {d.pip_pkg} {c}->{l} …", file=sys.stderr)
+                        ok, _ = _deps.upgrade_pip(d.pip_pkg, on_line=lambda l: print(f"  {l}", file=sys.stderr))
+                        print(f"  {'✅ uppdaterad' if ok else '❌ fel'}: {d.pip_pkg}", file=sys.stderr)
+                    # re-check
+                    _deps.check()
+        # om ej TTY, bara logga (redan gjort)
+    except Exception as exc:
+        log.debug("deps auto-erbjudande fel: %s", exc)
     args = build_parser().parse_args(argv)
     try:
         rc = args.func(args)

@@ -18,11 +18,37 @@ log = logging_setup.get(__name__)
 MAX_RECENT = 8
 
 
+def _config_dir() -> str:
+    """Return config dir — Audiobro, with legacy fallback ~/.audiobook-goodreads."""
+    new = os.path.join(os.path.expanduser("~"), ".audiobro")
+    legacy = os.path.join(os.path.expanduser("~"), ".audiobook-goodreads")
+    # migrate if legacy exists and new doesn't
+    try:
+        if os.path.isdir(legacy) and not os.path.isdir(new):
+            # copy settings.json/history.json if present
+            import shutil
+            os.makedirs(new, exist_ok=True)
+            for fn in ("settings.json", "history.json", "ignore.json", "cache.json", "titles.json", "openlibrary.json"):
+                src = os.path.join(legacy, fn)
+                dst = os.path.join(new, fn)
+                if os.path.isfile(src) and not os.path.isfile(dst):
+                    try:
+                        shutil.copy2(src, dst)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    # prefer new if it exists or legacy doesn't
+    if os.path.isdir(new):
+        return new
+    if os.path.isdir(legacy):
+        return legacy
+    return new
+
 def default_path() -> str:
     return os.environ.get(
         "AGS_SETTINGS",
-        os.path.join(os.path.expanduser("~"), ".audiobook-goodreads",
-                     "settings.json"),
+        os.path.join(_config_dir(), "settings.json"),
     )
 
 

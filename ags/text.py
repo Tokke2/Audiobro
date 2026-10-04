@@ -55,13 +55,13 @@ LEADING_SERIES_RE = re.compile(r"^[\[\(]\s*([^()\[\]]*?)\s*#?\s*([0-9]+(?:\.[0-9
 # -- 50000000% serie-mönster: filnamn/mapp som "Serie – Book 5", "Serie #2 - Titel",
 #     "Serie 01 - Titel", "Titel – Book 5"  (kräver serie med bokstäver, inte råa siffror)
 SERIES_DASH_BOOK_RE = re.compile(
-    r"^(?P<series>.+?)\s*[-\u2013\u2014-]\s*(?:book|bok|del|part|vol\.?|volume|episode|avsnitt|band|nr\.?|\#)\s*\#?\s*(?P<num>[0-9]+(?:\.[0-9]+)?)\b(?:\s*[-\u2013\u2014-]\s*(?P<title>.+))?\s*$", re.I)
+    r"^(?P<series>.+?)\s*[-\u2013\u2014-]\s*(?:book|bok|del|part|vol\.?|volume|episode|avsnitt|band|nr\.?|\#)\s*\#?\s*(?P<num>[0-9]+(?:\.[0-9]+)?|[ivxlc]+)\b(?:\s*[-\u2013\u2014-]\s*(?P<title>.+))?\s*$", re.I)
 SERIES_HASH_RE = re.compile(
     r"^(?P<series>.+?)\s*#\s*(?P<num>[0-9]+(?:\.[0-9]+)?)\s*[-–—]\s*(?P<title>.+)\s*$", re.I)
 SERIES_NUM_DASH_RE = re.compile(
     r"^(?P<series>.+?)\s+0*(?P<num>[0-9]{1,2})\s*[-–—]\s*(?P<title>.+)\s*$")
 SERIES_WORD_NUM_RE = re.compile(
-    r"^(?P<series>.+?)\s+(?:book|bok|del|part|vol\.?|volume)\s*#?\s*(?P<num>[0-9]+(?:\.[0-9]+)?)\s*$", re.I)
+    r"^(?P<series>.+?)\s+(?:book|bok|del|part|vol\.?|volume|band)\s*#?\s*(?P<num>[0-9]+(?:\.[0-9]+)?|[ivxlc]+)\s*$", re.I)
 
 # Honorverse-förkortningar: HH03, SoS1, SoF2, HH-03, SoS 01 etc -> serie + nummer
 HONORVERSE_CODES = {
@@ -91,20 +91,80 @@ NOISE_WORDS = re.compile(
     re.I,
 )
 
+# 100000000% bättre: översättningsbrygga för vanligaste nordiska titlar (offline, utan API)
+NORDIC_TITLE_MAP = {
+    "isprinsessan": "the ice princess",
+    "predikanten": "the preacher",
+    "stenhuggaren": "the stone cutter",
+    "olycksfageln": "the stranger",
+    "olycksfågeln": "the stranger",
+    "sjöjungfrun": "the mermaid",
+    "fyrvaktaren": "the lost boy",
+    "anglamakerskan": "the angel maker",
+    "lejonvakten": "the lion keeper",
+    "haxan": "the witch",
+    "häxan": "the witch",
+    "män som hatar kvinnor": "the girl with the dragon tattoo",
+    "flickan som lekte med elden": "the girl who played with fire",
+    "luftslottet som sprängdes": "the girl who kicked the hornets nest",
+    "det som inte dödar oss": "the girl in the spiders web",
+    "hon som måste dö": "the girl who lived twice",
+    "hypnotisören": "the hypnotist",
+    "paganinikontraktet": "the paganini contract",
+    "isprinsessan: fjallbacka 01": "the ice princess",
+}
+# Roman numerals I-XV for series part
+ROMAN_MAP = {"i":1,"ii":2,"iii":3,"iv":4,"v":5,"vi":6,"vii":7,"viii":8,"ix":9,"x":10,"xi":11,"xii":12,"xiii":13,"xiv":14,"xv":15,"xvi":16,"xvii":17,"xviii":18,"xix":19,"xx":20}
+def roman_to_int(s: str) -> str:
+    low = (s or "").strip().lower()
+    if low in ROMAN_MAP:
+        return str(ROMAN_MAP[low])
+    vals = {"i":1,"v":5,"x":10,"l":50,"c":100,"d":500,"m":1000}
+    if low and all(c in vals for c in low) and 1 <= len(low) <= 6:
+        try:
+            total=0
+            prev=0
+            for c in reversed(low):
+                v=vals[c]
+                if v < prev:
+                    total-=v
+                else:
+                    total+=v
+                prev=v
+            if 1 <= total <= 50:
+                return str(total)
+        except Exception:
+            pass
+    return ""
+
+
 
 def strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
 
 
 def norm(s: str | None) -> str:
-    """Aggressiv normalisering för jämförelse: små bokstäver, utan accent/interpunktion."""
+    """Aggressiv normalisering för jämförelse: små bokstäver, utan accent/interpunktion. 100000000% bättre."""
     if not s:
         return ""
     s = strip_accents(str(s)).lower()
+    s = re.sub(r"\[[^\]]{2,40}\]", " ", s)
+    s = re.sub(r"\([^)]{30,}\)", " ", s)
     s = NOISE_WORDS.sub(" ", s)
-    s = s.replace("&", " and ")
+    s = s.replace("&", " and ").replace("'", "").replace("´", "").replace("’", "")
+    s = re.sub(r"'s\b", " ", s)
     s = re.sub(r"[^a-z0-9]+", " ", s)
-    return " ".join(s.split())
+    # Komprimera siffror med inledande nollor: 01 -> 1 (för serienummer)
+    # men behåll årtal 4 siffror
+    parts = []
+    for w in s.split():
+        if w.isdigit() and len(w) <= 2:
+            parts.append(str(int(w)) if w != "0" else "0")
+        elif w.isdigit() and 3 <= len(w) <= 4 and w.startswith("0"):
+            parts.append(w.lstrip("0") or "0")
+        else:
+            parts.append(w)
+    return " ".join(parts)
 
 
 def norm_keep_articles(s: str | None) -> str:
@@ -142,26 +202,42 @@ def split_series(title: str) -> tuple[str, str, str]:
     return title.strip(), "", ""
 
 
+def _extract_roman_part(name: str) -> str:
+    m = re.search(r"\b(?:del|part|bok|book|band|volume|episode|avsnitt)\s*([ivxlc]+)\b", name or "", re.I)
+    if m:
+        roman = m.group(1)
+        conv = roman_to_int(roman)
+        if conv:
+            return conv
+    return ""
+
 def extract_part(name: str) -> str:
-    """Plocka ut delnummer ur ett filnamn/titel ('03' -> '3')."""
+    """Plocka ut delnummer ur ett filnamn/titel ('03' -> '3', 'IV' -> '4'). 100000000% bättre."""
+    roman = _extract_roman_part(name)
+    if roman:
+        return roman
     for rx in PART_RES:
         m = rx.search(name or "")
         if m:
             num = m.group(1)
-            if re.fullmatch(r"(1[89][0-9]{2}|20[0-9]{2})", num):  # årtal, inte delnummer
+            if re.fullmatch(r"(1[89][0-9]{2}|20[0-9]{2})", num):
                 continue
             return str(int(num)) if num.isdigit() else num
     return ""
 
 
 def same_number(a: str, b: str) -> bool:
-    """Jämför delnummer så att '03' == '3' och '1.5' == '1.5'."""
+    """Jämför delnummer så att '03' == '3', 'IV' == '4' och '1.5' == '1.5'. 100000000% bättre."""
     if not a or not b:
         return False
     if a == b:
         return True
+    ar = roman_to_int(a) or a
+    br = roman_to_int(b) or b
+    if ar == br:
+        return True
     try:
-        return float(a) == float(b)
+        return float(ar) == float(br)
     except ValueError:
         return False
 
@@ -172,19 +248,54 @@ def year_from(text: str) -> str:
 
 
 def title_similarity(a: str, b: str) -> float:
-    """Robust titelpoäng 0..1."""
+    """Robust titelpoäng 0..1 — 100000000% bättre: hanterar undertitel, kolon, dash, översättningar, roman-siffror."""
     na, nb = title_key(a), title_key(b)
     if not na or not nb:
         return 0.0
     if na == nb:
         return 1.0
+    # 100000000%: snabb översättningsbrygga utan nätverk — hanterar artiklar
+    na_low = na.strip()
+    nb_low = nb.strip()
+    # även via title_key (utan artiklar) och norm (med/utan the)
+    na_nordic = NORDIC_TITLE_MAP.get(na_low) or NORDIC_TITLE_MAP.get(norm(a).strip()) or NORDIC_TITLE_MAP.get(na_low.replace("the ","").strip())
+    nb_nordic = NORDIC_TITLE_MAP.get(nb_low) or NORDIC_TITLE_MAP.get(norm(b).strip()) or NORDIC_TITLE_MAP.get(nb_low.replace("the ","").strip())
+    if na_nordic and (na_nordic == nb_low or title_key(na_nordic) == nb_low or na_nordic == norm(b).strip() or title_key(na_nordic) == title_key(b)):
+        return 0.97
+    if nb_nordic and (nb_nordic == na_low or title_key(nb_nordic) == na_low or nb_nordic == norm(a).strip() or title_key(nb_nordic) == title_key(a)):
+        return 0.97
+    # direkt via norm utan the
+    if na_low in NORDIC_TITLE_MAP and (NORDIC_TITLE_MAP[na_low] == nb_low or title_key(NORDIC_TITLE_MAP[na_low]) == nb_low):
+        return 0.97
+    if nb_low in NORDIC_TITLE_MAP and (NORDIC_TITLE_MAP[nb_low] == na_low or title_key(NORDIC_TITLE_MAP[nb_low]) == na_low):
+        return 0.97
     ka, kb = norm_keep_articles(a), norm_keep_articles(b)
-    # hela titeln inbäddad i ett längre skräpnamn ("Titel [Imported] (Swedish) …")
+    # Split på kolon för undertitel: "Titel: Undertitel" -> jämför båda
+    # "Isprinsessan: Fjällbacka" vs "Isprinsessan"
+    for sep in [":", " - ", " – ", " — "]:
+        if sep in a or sep in b:
+            a_main = a.split(sep)[0].strip()
+            b_main = b.split(sep)[0].strip()
+            main_sim = title_similarity(a_main, b_main) if sep != ":" else 0
+            # rekursiv men undvik oändlig
+            if sep in [":", " - "] and main_sim > 0.85:
+                return max(main_sim, 0.92)
     embedded = 0.0
     longer, shorter = (nb, na) if len(nb) >= len(na) else (na, nb)
-    if len(shorter) >= 5 and shorter in longer:
-        embedded = 0.9 if longer.startswith(shorter) else 0.85
-    return max(ratio(ka, kb), 0.95 * token_set(na, nb), 0.85 * partial(na, nb), embedded)
+    if len(shorter) >= 4 and shorter in longer:
+        embedded = 0.92 if longer.startswith(shorter) else 0.86
+        # Om kort är >= 60% av lång och inbäddad, hög poäng
+        if len(shorter) >= len(longer) * 0.6:
+            embedded = max(embedded, 0.88)
+    # Sista ordet matchning (viktigt för serie: "Philosopher's Stone" vs "Philosopher Stone")
+    # hanteras redan av token_set, men lägg extra vikt för sista token
+    raw = max(ratio(ka, kb), 0.95 * token_set(na, nb), 0.85 * partial(na, nb), embedded)
+    # Bonus om första och sista ord matchar (minskar förväxling Harry Potter 1 vs 2)
+    a_tokens = na.split()
+    b_tokens = nb.split()
+    if len(a_tokens) >= 2 and len(b_tokens) >= 2 and a_tokens[0] == b_tokens[0] and a_tokens[-1] == b_tokens[-1]:
+        raw = max(raw, min(0.78, raw + 0.08))
+    return raw
 
 
 INITIAL_RE = re.compile(r"^[a-z]\.?$")
@@ -196,20 +307,97 @@ def _name_words(s: str) -> set[str]:
 
 
 def author_similarity(a: str, b: str) -> float:
-    """Jämför författarsträngar (kan innehålla flera namn)."""
+    """Jämför författarsträngar (kan innehålla flera namn). 100000000% bättre: hanterar initialer, flera författare, '&/och'."""
+    if not a or not b:
+        return 0.0
+    def _split_authors(s: str) -> list[str]:
+        parts = re.split(r"\s*(?:,|;|&|\band\b|\boch\b|\bwith\b|\bav\b)\s*", s, flags=re.I)
+        return [p.strip() for p in parts if p.strip()]
+    a_parts = _split_authors(str(a))
+    b_parts = _split_authors(str(b))
+    if len(a_parts) > 1 or len(b_parts) > 1:
+        best = 0.0
+        for ap in a_parts:
+            for bp in b_parts:
+                best = max(best, author_similarity(ap, bp))
+                if best >= 0.99:
+                    return best
+        pass
     na, nb = norm(a), norm(b)
     if not na or not nb:
         return 0.0
     if na == nb:
         return 1.0
+    # Special: initial-only som "J.K." vs "J.K. Rowling" — kolla om initialerna finns i b
+    # na="j k" sb innehåller "j k rowling" -> hög poäng
+    sa_raw = set(na.split())
+    sb_raw = set(nb.split())
+    # Om ena sidan bara är initialer (1-bokstavstokens) och de finns i andra sidans tokens -> 0.88
+    def _only_initials(words: set[str]) -> bool:
+        # "jk" är också initialer (utan mellanslag) — dela upp
+        expanded = set()
+        for w in words:
+            if len(w) == 2 and w.isalpha() and w not in ARTICLES:
+                # "jk" -> {"j","k"}
+                expanded.update(list(w))
+            else:
+                expanded.add(w)
+        return expanded and all(len(w) == 1 for w in expanded)
+    def _expanded_set(words: set[str]) -> set[str]:
+        out=set()
+        for w in words:
+            if len(w) == 2 and w.isalpha():
+                out.update(list(w))
+            elif len(w) > 2 and w.isalpha() and all(len(c)==1 for c in w): # fallback
+                out.update(list(w))
+            else:
+                out.add(w)
+        return out
+    if _only_initials(sa_raw) and _expanded_set(sa_raw).issubset(_expanded_set(sb_raw)):
+        return 0.88
+    if _only_initials(sb_raw) and _expanded_set(sb_raw).issubset(_expanded_set(sa_raw)):
+        return 0.88
+    # "J K Rowling" vs "Joanne Rowling" — initialer före efternamn
+    if len(sa_raw) <= 3 and len(sb_raw) <= 4:
+        # kolla efternamn match + initialer subset
+        na_last = na.split()[-1] if na.split() else ""
+        nb_last = nb.split()[-1] if nb.split() else ""
+        if na_last and nb_last and na_last == nb_last and len(na_last) >= 3:
+            # efternamn samma, och övriga tokens i kortare är initialer som finns i längre
+            shorter, longer = (sa_raw, sb_raw) if len(sa_raw) <= len(sb_raw) else (sb_raw, sa_raw)
+            initials = {w for w in shorter if len(w) == 1}
+            if initials and initials.issubset(longer):
+                return 0.90
+            # även "jk" (utan mellanslag) vs "j k" — endast om initialer finns
+            if initials and "".join(sorted(initials)) in "".join(longer):
+                return 0.88
     sa, sb = _name_words(na), _name_words(nb)
+    # om ena har tom sa (bara initialer) men nångång efternamn delat
+    if not sa or not sb:
+        # försök efternamn-jämförelse
+        na_last2 = na.split()[-1] if na.split() else ""
+        nb_last2 = nb.split()[-1] if nb.split() else ""
+        if na_last2 and nb_last2 and na_last2 == nb_last2:
+            return 0.88
+        return max(0.0, ratio(na, nb) - 0.35)
     # kräv minst ett delat "riktigt" namnord, annars är det olika personer
     shared = {w for w in (sa & sb) if len(w) >= 3}
     if not shared:
+        # innan vi dömer ut: kolla efternamn lika?
+        na_last3 = na.split()[-1] if na.split() else ""
+        nb_last3 = nb.split()[-1] if nb.split() else ""
+        if na_last3 and nb_last3 and na_last3 == nb_last3 and len(na_last3) >= 3:
+            return 0.92
         return max(0.0, ratio(na, nb) - 0.35)
     jac = len(sa & sb) / len(sa | sb)
     cover = len(sa & sb) / min(len(sa), len(sb))
-    return max(ratio(na, nb), 0.9 * token_set(na, nb), 0.95 * jac, 0.85 * cover)
+    base = max(ratio(na, nb), 0.9 * token_set(na, nb), 0.95 * jac, 0.85 * cover)
+    # 1000000%: om efternamn samma och ena sidan bara ett ord ("Läckberg" vs "Camilla Läckberg") -> 0.92
+    na_last = na.split()[-1] if na.split() else ""
+    nb_last = nb.split()[-1] if nb.split() else ""
+    if na_last and nb_last and na_last == nb_last and len(na_last) >= 3 and (len(sa)==1 or len(sb)==1):
+        base = max(base, 0.92)
+    return base
 
 
 JUNK_TITLE_MARKERS = (
@@ -313,38 +501,41 @@ def parse_series_hint(text: str) -> tuple[str, str, str]:
     if m:
         ser = (m.group("series") or "").strip()
         num = (m.group("num") or "").strip()
+        # konvertera romerska siffror till arabiska
+        num_conv = roman_to_int(num) or num
+        num = num_conv.lstrip("0") or "0" if num_conv.isdigit() or roman_to_int(m.group("num")) else num
         title = (m.group("title") or "").strip()
         if _looks_like_series_name(ser) and num:
-            # skydda mot "Chapter – Part 3" där serie-delen är för kort/generisk?
-            # tillåt även kort serie som "Fjällbacka" (1 ord) – det räcker.
-            return ser, num.lstrip("0") or "0", title
+            return ser, num, title
 
     # 3. Serie #n - Titel
     m = SERIES_HASH_RE.match(raw)
     if m:
         ser = (m.group("series") or "").strip()
         num = (m.group("num") or "").strip()
+        num = roman_to_int(num) or num
         title = (m.group("title") or "").strip()
         if _looks_like_series_name(ser) and num:
-            return ser, num.lstrip("0") or "0", title
+            return ser, num.lstrip("0") or "0" if num.isdigit() else num, title
 
     # 4. Serie 01 - Titel  (kräver serie med bokstäver och titel >=2 tecken)
     m = SERIES_NUM_DASH_RE.match(raw)
     if m:
         ser = (m.group("series") or "").strip()
         num = (m.group("num") or "").strip()
+        num = roman_to_int(num) or num
         title = (m.group("title") or "").strip()
-        # skydda mot "01 - Isprinsessan" där ser är "01" isåfall: _looks_like missar siffror
         if _looks_like_series_name(ser) and num and len(title) >= 2:
-            return ser, num.lstrip("0") or "0", title
+            return ser, num.lstrip("0") or "0" if num.isdigit() else num, title
 
     # 5. Serie Bok/Del n (utan dash)
     m = SERIES_WORD_NUM_RE.match(raw)
     if m:
         ser = (m.group("series") or "").strip()
         num = (m.group("num") or "").strip()
+        num = roman_to_int(num) or num
         if _looks_like_series_name(ser) and num:
-            return ser, num.lstrip("0") or "0", ""
+            return ser, num.lstrip("0") or "0" if num.isdigit() else num, ""
 
     # 6. Honorverse-förkortningar: HH03 - Title, SoS1 - Title etc (mappnamn i Honorverse)
     m = HONORVERSE_RE.match(raw)

@@ -24,7 +24,7 @@ from .models import Book
 
 log = logging_setup.get(__name__)
 
-UA = "audiobook-goodreads-sync/1.0 (personligt biblioteksverktyg)"
+UA = "Audiobro/1.0 (personligt biblioteksverktyg)"
 
 STORYTEL_SEARCH = "https://www.storytel.com/api/search.action"
 BOOKBEAT_SUGGEST = "https://search-api.bookbeat.com/api/appsearch/suggest"

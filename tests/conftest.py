@@ -4,7 +4,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolera_anvandarfiler(tmp_path, monkeypatch):
-    """Historiken och inställningarna ska aldrig röra ~/.audiobook-goodreads i tester."""
+    """Historiken och inställningarna ska aldrig röra ~/.audiobro (legacy ~/.audiobook-goodreads) i tester."""
     from ags import history as history_mod
     from ags import settings as settings_mod
 

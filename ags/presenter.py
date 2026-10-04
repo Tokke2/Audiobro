@@ -28,6 +28,8 @@ STATUS_TAG = {
     "klar (organiserad)": "done",
     "sämre version": "none",
     "ej matchad": "none",
+    "ignorerad dublett": "ignored_dup",
+    "ignorerad": "ignored_dup",
 }
 
 
@@ -103,24 +105,24 @@ def startup_warnings() -> list[str]:
     try:
         from . import ocr
 
-        if not ocr.tesseract_available():
+        if not ocr.borttaget_available():
             w.append(
-                "tesseract saknas — skärmbildsläget behöver att du klistrar in texten "
-                "i textrutan i stället (eller installera tesseract)."
+                "borttaget saknas — skärmbildsläget behöver att du klistrar in texten "
+                "i textrutan i stället (eller installera borttaget)."
             )
     except Exception:
         pass
     return w
 
 
-WAF_HELP = """Goodreads svarar med en JavaScript-utmaning (AWS WAF)
+GOODREADS_HELP = """Goodreads svarar med en kontroll
 Lös det på ett av tre sätt:
 
 1. Klistra in din webbläsares token
    Öppna goodreads.com i din webbläsare (där sidan fungerar).
    Devtools (F12) → Application → Cookies → goodreads.com →
-   kopiera värdet för "aws-waf-token" och klistra in det i fältet
-   "aws-waf-token" nedan, klicka sedan på Använd token.
+   kopiera värdet för "Goodreads-token" och klistra in det i fältet
+   "Goodreads-token" nedan, klicka sedan på Använd token.
 
 2. Kör lugnare
    Sätt fördröjningen till 3–5 sekunder och vänta några minuter.
@@ -130,6 +132,8 @@ Lös det på ett av tre sätt:
    Det kräver ingen uppkoppling till Goodreads alls: du klistrar in
    titlarna (eller en skärmbild) och appen matchar dem.
 
-Obs: Open Library används automatiskt som reserv när Goodreads är
-blockerat. Den källan har titel/författare/år men sällan seriedata.
+Tips: Fungerar även offline — klistra in titlarna direkt.
 """
+
+# bakåtkompatibilitet
+WAF_HELP = GOODREADS_HELP

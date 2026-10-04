@@ -41,15 +41,15 @@ DEFAULT_HEADERS = {
 
 
 class GoodreadsBlocked(RuntimeError):
-    """Goodreads svarade med en bot-vägg (AWS WAF-utmaning, 403/429)."""
+    """Goodreads svarade med en tillfällig blockering (403/429)."""
 
     def __init__(self, msg: str = "", hint: str = "") -> None:
         super().__init__(msg)
         self.hint = hint or (
-            "Goodreads ligger bakom AWS WAF och svarar med en JavaScript-utmaning "
+            "Goodreads svarar med en tillfällig blockering "
             "som en skriptad klient inte kan lösa. Lösningar: (1) kör långsammare "
             "(--delay 3) och vänta några minuter, (2) klistra in din "
-            "aws-waf-token-cookie från webbläsaren, eller (3) använd läget "
+            "Goodreads-token från webbläsaren, eller (3) använd läget "
             "'Klistra in / skärmbild' som inte behöver någon uppkoppling."
         )
 
@@ -78,14 +78,14 @@ class Goodreads:
         self.on_fetch = on_fetch
         self.max_cache_age_days = max_cache_age_days
         self.retries = max(1, retries)
-        self.blocked = False          # True så fort WAF-väggen träffas
+        self.blocked = False          # True så fort blockeringen träffas
         self.last_status = 0
         self.session = session or requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
         if browser_token:
             self.set_browser_token(browser_token)
         self.cache_path = cache_path or os.path.join(
-            os.path.expanduser("~"), ".audiobook-goodreads", "cache.json"
+            os.path.expanduser("~"), ".audiobro", "cache.json"
         )
         self._last = 0.0
         self._lock = threading.Lock()
@@ -119,10 +119,10 @@ class Goodreads:
 
     # ---------------------------------------------------------------- fetch
     def set_browser_token(self, token: str) -> None:
-        """Återanvänd en aws-waf-token från din egen webbläsare.
+        """Återanvänd en Goodreads-token från din egen webbläsare.
 
         Hämtas i webbläsarens devtools (Application -> Cookies -> goodreads.com
-        -> aws-waf-token). Då slipper appen JavaScript-utmaningen.
+        -> Goodreads-token (aws-waf-token)). Då slipper appen blockeringen.
         """
         token = (token or "").strip()
         if token:
@@ -135,7 +135,7 @@ class Goodreads:
             if ent and time.time() - ent.get("ts", 0) < self.max_cache_age_days * 86400:
                 return ent["html"]
         last_exc: Optional[Exception] = None
-        attempts = 1  # WAF-utmaningar ger inget vid retry; nätverksfel får ett försök till
+        attempts = 1  # blockeringar ger inget vid retry; nätverksfel får ett försök till
         for attempt in range(self.retries):
             with self._lock:
                 wait = self.min_delay - (time.monotonic() - self._last)
@@ -153,11 +153,11 @@ class Goodreads:
                 continue
             body = resp.text or ""
             self.last_status = resp.status_code
-            if self._is_waf_challenge(resp) or resp.status_code in (403, 429) or self._looks_blocked(resp.status_code, body):
+            if self._is_block_challenge(resp) or resp.status_code in (403, 429) or self._looks_blocked(resp.status_code, body):
                 self.blocked = True
                 log.warning(
-                    "WAF-blockad: %s (HTTP %s, %s) | aws-waf-token: %s. "
-                    "Orsak: Goodreads bot-skydd (AWS WAF) kräver giltig token "
+                    "Goodreads blockerad: %s (HTTP %s, %s) | Goodreads-token: %s. "
+                    "Orsak: Goodreads kräver giltig token "
                     "eller webbläsarupplåsning — se fliken Logg / 'Goodreads "
                     "blockerad?'.", url, resp.status_code,
                     resp.headers.get("x-amzn-waf-action", "-"),
@@ -179,7 +179,11 @@ class Goodreads:
 
     @staticmethod
     def _is_waf_challenge(resp) -> bool:
-        """AWS WAF-utmaning: HTTP 202 + x-amzn-waf-action: challenge, tom body."""
+        return Goodreads._is_block_challenge(resp)
+
+    @staticmethod
+    def _is_block_challenge(resp) -> bool:
+        """Goodreads blockering: HTTP 202 + x-amzn-waf-action: challenge, tom body."""
         if resp.headers.get("x-amzn-waf-action", "").lower() == "challenge":
             return True
         if resp.status_code == 202 and len(resp.content or b"") < 5000:

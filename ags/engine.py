@@ -39,23 +39,33 @@ class EngineOptions:
     max_candidates: int = 6
     use_fallback: bool = True      # Open Library när Goodreads är blockerat/tomt
     use_title_bridge: bool = True  # gissa engelsk originaltitel för svenska titlar
-    auto_token: bool = False       # lås upp WAF via Brave/Chromium vid blockering
+    auto_token: bool = False       # lås upp Goodreads via Brave/Chromium vid blockering
     skip_done: bool = True         # hoppa över böcker som historiken säger är klara
     replaygain: bool = True        # 1) ReplayGain / volymnormalisering — skriv REPLAYGAIN_* om ffmpeg finns
 
 
 def _clean_ranked(matches: list, prefer_title: str = "") -> list:
-    """Poäng>0.15; föredra (1) exakt titelutgåva, (2) ren utgåva, annars som det är."""
+    """Poäng>0.15; föredra (1) exakt titelutgåva, (2) ren utgåva, (3) nordic översättning, annars som det är. 100000000% bättre."""
     from .text import title_key
 
     matches = [m for m in matches if m.score > 0.15]
     if not matches:
         return matches
     want = title_key(prefer_title)
+    # även nordic översättning som exakt
+    try:
+        from .text import NORDIC_TITLE_MAP, norm
+        want_norm = norm(prefer_title).strip() if prefer_title else ""
+        want_trans = NORDIC_TITLE_MAP.get(want_norm, "")
+        want_trans_key = title_key(want_trans) if want_trans else ""
+    except Exception:
+        want_trans_key = ""
     if want:
         exact = [m for m in matches if title_key(m.book.title) == want]
+        # även översättningsexakt
+        if not exact and want_trans_key:
+            exact = [m for m in matches if title_key(m.book.title) == want_trans_key]
         if exact:
-            # samma titel i flera utgåvor: föredra den med seriedata, sedan flest ratings
             exact.sort(key=lambda m: (0 if (m.book.series or m.book.series_number) else 1,
                                       -_ratings(m.book), -m.score))
             rest = [m for m in matches if m not in exact]
@@ -70,18 +80,58 @@ def _ratings(book) -> int:
 
 
 # Krav 23: flera versioner av samma bok -> behåll den bästa.
-# Kvalitet = total filstorlek (proxy för bitrate), därefter format
-# (m4b/m4a före mp3 — en fil, kapitel), därefter färst antal filer.
-_FORMAT_RANK = {"flac": 3, "m4b": 2, "m4a": 2, "mp3": 1}
-
+# BÅTTRE: Mer träffsäker — bitrate (via mutagen/ffprobe) → sample_rate → codec → storlek → färre filer
+_FORMAT_RANK = {"flac": 5, "wav": 4, "alac": 4, "m4b": 3, "m4a": 3, "aac": 3, "opus": 3, "mp3": 2, "ogg": 2, "wma": 1}
 
 def _version_quality(p: "Proposal") -> tuple:
+    """BÅTTRE ljudkvalitet: probe första filen för exakt bitrate/sample_rate, annars fallback storlek/format."""
     size = getattr(p, "total_size_mb", None)
     if size is None:
         size = p.audio.size_mb or 0.0
-    fmt = _FORMAT_RANK.get((p.audio.format or "").lower(), 0)
+    fmt = (p.audio.format or "").lower()
+    base_rank = _FORMAT_RANK.get(fmt, 1)
     n_files = len(getattr(p, "paths", None) or [p.audio.path])
-    return (round(size, 1), fmt, -n_files)
+    # Försök exakt bitrate/sample_rate/codec via audioinfo.probe (finns filen?)
+    bitrate = 0
+    sample_rate = 0
+    codec_rank = base_rank
+    try:
+        paths = getattr(p, "paths", None) or [p.audio.path]
+        pth = next((x for x in paths if x and __import__("os").path.exists(x)), "")
+        if pth:
+            from . import audioinfo as _ai
+            q = _ai.probe(pth)
+            if q:
+                if q.bitrate_kbps:
+                    bitrate = int(q.bitrate_kbps)
+                if q.sample_rate:
+                    sample_rate = int(q.sample_rate)
+                if q.codec:
+                    codec_rank = _FORMAT_RANK.get(q.codec.lower(), base_rank)
+                    # FLAC via codec rank högre
+                    if "flac" in q.codec.lower():
+                        codec_rank = 5
+                    elif "aac" in q.codec.lower():
+                        codec_rank = 3
+                if q.size_mb and q.size_mb > 0:
+                    size = q.size_mb
+    except Exception:
+        pass
+    # Fallback bitrate från storlek om probe missade och duration finns (approx)
+    if bitrate == 0 and size and getattr(p.audio, "path", ""):
+        try:
+            dur = 0
+            paths = getattr(p, "paths", None) or [p.audio.path]
+            pth = next((x for x in paths if x and __import__("os").path.exists(x)), "")
+            if pth:
+                from . import audioinfo as _ai
+                q2 = _ai.probe(pth)
+                if q2 and q2.duration_s:
+                    dur = q2.duration_s
+            if dur and dur > 60:
+                bitrate = int((float(size)*1024*1024*8)/(dur*1000))
+        except: pass
+    return (int(bitrate), int(sample_rate), int(codec_rank), round(float(size),1), -int(n_files))
 
 
 def choose_best_versions(proposals: list["Proposal"]) -> list["Proposal"]:
@@ -91,26 +141,108 @@ def choose_best_versions(proposals: list["Proposal"]) -> list["Proposal"]:
     titel+författare). Vinnaren behåller sin status; förlorarna markeras
     'sämre version' + skipped så att de inte organiseras. Returnerar
     listan över ändrade förslag.
+
+    Respekterar ignorerade dubbletter (även över källor) — robust mot
+    olika stavning/hyphen och "Läckberg, Camilla" vs "Camilla Läckberg".
     """
     from .text import norm, title_key
+    try:
+        from .ignore import load_ignored, dup_keys_for_proposal, is_ignored_any
+        ignored = load_ignored()
+    except Exception:
+        ignored = set()
 
     by_key: dict[str, list] = {}
     for p in proposals:
         if p.skipped or p.status not in ("matchad", "behöver koll") or not p.match:
             continue
+        # Ignorerad dublett — hoppa över helt (robust cross-source)
+        try:
+            from .ignore import dup_keys_for_proposal as _dkp
+            keys = _dkp(p)
+            if keys and is_ignored_any(keys, path=None):
+                # använd loadad ignored via helper för att undvika extra I/O
+                if any(k in ignored for k in keys):
+                    log.info("ignorerad dublett hoppas över i best-version: %r (%s)", p.new_title or p.audio.title, next(iter(keys)))
+                    continue
+        except Exception:
+            pass
+        # Gruppera robust cross-source: använd både id och robust titel+författare så att "Läckberg, Camilla" == "Camilla Läckberg" och "IS-prinsessan" == "Isprinsessan"
+        try:
+            from .ignore import _robust_title_key, _robust_author_key
+            rtk = _robust_title_key(p.new_title or p.audio.title or "")
+            rak = _robust_author_key(p.new_artist or p.audio.artist or "")
+            robust_key = f"ta:{rtk}|{rak}" if rtk else ""
+        except Exception:
+            robust_key = ""
         bid = p.match.book.book_id if p.match.book else ""
-        key = (f"id:{bid}" if bid else
-               "ta:" + title_key(p.new_title or p.audio.title)
-               + "|" + norm(p.new_artist or p.audio.artist))
+        # Prioritera robust titel+författare för cross-source, men behåll id som egen grupp om robust saknas
+        if robust_key and robust_key != "ta:|":
+            key = robust_key
+        elif bid:
+            key = f"id:{bid}"
+        else:
+            key = "ta:" + title_key(p.new_title or p.audio.title) + "|" + norm(p.new_artist or p.audio.artist)
+        # Även robust cross-source check (ignorera)
+        try:
+            from .ignore import dup_keys_for_proposal as _dkp2
+            if any(k in ignored for k in _dkp2(p)):
+                log.info("ignorerad cross-source dublett hoppas över: %r", p.new_title or p.audio.title)
+                continue
+        except Exception:
+            pass
         by_key.setdefault(key, []).append(p)
 
     changed: list = []
     for group in by_key.values():
         if len(group) < 2:
             continue
+        # Extra check: om gruppens första proposal är ignorerad (robust), skippa hela gruppen
+        try:
+            from .ignore import dup_keys_for_proposal as _dkp3
+            if any(k in ignored for k in _dkp3(group[0])):
+                continue
+        except Exception:
+            pass
+        # Säkerhet: två olika böcker i samma serie ska aldrig bli "sämre version" — kräver hög titellikhet
+        # (fix 2026-10-04: Worlds of Honor vs Changer of Worlds felaktigt grupperade)
+        try:
+            from .text import title_similarity, author_similarity
+            # Filtrera gruppen — behåll bara de som faktiskt är samma bok (titelnära + samma författare)
+            filtered = [group[0]]
+            for cand in group[1:]:
+                ts = title_similarity(group[0].new_title or group[0].audio.title or "", cand.new_title or cand.audio.title or "")
+                # Även fallback till group_label om titel tom
+                if ts < 0.10:
+                    ts2 = title_similarity(group[0].audio.group_label or "", cand.audio.group_label or "")
+                    ts = max(ts, ts2)
+                auth_a = group[0].new_artist or group[0].audio.artist or ""
+                auth_b = cand.new_artist or cand.audio.artist or ""
+                aus = author_similarity(auth_a, auth_b) if auth_a and auth_b else 1.0
+                if ts < 0.75:
+                    log.info("hoppar över sämre-version för %r vs %r — titlar för olika (%.2f) trots samma robust nyckel %r", cand.new_title or cand.audio.title, group[0].new_title or group[0].audio.title, ts, next(iter(by_key), "")[:30])
+                    continue
+                if aus < 0.30 and auth_a and auth_b:
+                    log.info("hoppar över sämre-version för %r vs %r — författare för olika (%.2f)", cand.new_title or cand.audio.title, group[0].new_title or group[0].audio.title, aus)
+                    continue
+                filtered.append(cand)
+            group = filtered
+            if len(group) < 2:
+                continue
+        except Exception as exc:
+            log.debug("titel-filter för best-version fel: %s", exc)
         group.sort(key=_version_quality, reverse=True)
         best = group[0]
         for worse in group[1:]:
+            # Dubbelkolla titlar en extra gång före markering — olika böcker i serie ska ej flaggas
+            try:
+                from .text import title_similarity as _ts2
+                _ts = _ts2(best.new_title or best.audio.title or best.audio.group_label or "", worse.new_title or worse.audio.title or worse.audio.group_label or "")
+                if _ts < 0.75:
+                    log.info("skippar sämre-markering: %r vs %r titlar olika %.2f", best.new_title or best.audio.title, worse.new_title or worse.audio.title, _ts)
+                    continue
+            except Exception:
+                pass
             worse.status = "sämre version"
             worse.skipped = True
             b_size = getattr(best, "total_size_mb", best.audio.size_mb or 0.0)
@@ -165,6 +297,13 @@ class Engine:
         source = "goodreads"
         from . import logging_setup as _ls
         _log = _ls.get("engine.match")
+        # 100000000% bättre: logga query-förfining med roman-normalisering
+        try:
+            from .text import roman_to_int as _r2i2
+            if title and _r2i2(title.split()[-1]):
+                _log.debug("roman-detekt: titel slutar med roman %s", title.split()[-1])
+        except Exception:
+            pass
         if not getattr(self.client, "blocked", False):
             try:
                 books = self.client.search_best(q, limit=self.options.max_candidates)
@@ -203,7 +342,7 @@ class Engine:
                     except Exception as exc2:  # noqa: BLE001
                         self.on_status(f"Upplåsning misslyckades: {exc2}")
                 if not books:
-                    note = (note + " | " if note else "") + "Goodreads blockerad (AWS WAF)"
+                    note = (note + " | " if note else "") + "Goodreads blockerad"
                     self.on_status(note)
             except GoodreadsError as exc:
                 _log.warning("goodreads-fel för %r: %s", q, exc)
@@ -249,7 +388,9 @@ class Engine:
     def _short_query(title: str, author: str) -> str:
         """'Harry Potter and the Philosopher's Stone' -> 'Harry Potter' (+ författare)."""
         small = {"om", "och", "i", "av", "the", "of", "and", "en", "ett", "den", "det"}
-        words = split_series(title or "")[0].split()
+        # 1000000%: ta bort undertitel efter kolon
+        base = split_series(title or "")[0].split(":")[0].strip()
+        words = base.split()
         if len(words) <= 3:
             return ""
         keep = words[:3]
@@ -325,24 +466,62 @@ class Engine:
             split_series(audio.album)[0] if not _is_chapter_junk(split_series(audio.album)[0]) else "",
             library.read_tags(rep.path).get("series", ""),
         ]
-        # platta ut och filtrera — 100000% : behåll ordning men filtrera junk hårt
+        # platta ut och filtrera — 100000000% bättre: behåll ordning, rensa bracket-skräp, hantera roman/band
         flat: list[str] = []
         seen = set()
         for c in q_candidates:
             if c and isinstance(c, str) and c.strip():
                 cc = c.strip()
-                # rensa skräp som "Unknown Album (4/...)" -> ta bort parentes-suffix
-                cc = cc.split(" (")[0].strip()
+                # rensa " (Disc 01)" etc, men behåll "(Fjällbacka, #1)" som kan vara serieinfo
+                cc = re.sub(r"\s*\(Disc[^)]*\)", " ", cc, flags=re.I).strip()
+                cc = cc.split(" [")[0].strip()  # "[Imported]" direkt bort
+                cc = cc.split(" (")[0].strip() if "disc" in cc.lower() or "imported" in cc.lower() or len(cc.split(" (")[-1]) > 25 else cc
                 if not looks_like_junk_title(cc) and cc.lower() not in ("unknown album", "unknown"):
                     low = cc.lower()
                     if low not in seen:
                         flat.append(cc)
                         seen.add(low)
-        # 100000%: prova flera frågor i prioritetsordning tills något hittar
-        # (tidigare togs bara första; nu testas upp till 5 kandidater mot Goodreads/fallback)
+                        # även prova utan "Band N" "Del N" för ren titel
+                        no_part = strip_part_words(cc)
+                        if no_part and no_part != cc and no_part.lower() not in seen and not looks_like_junk_title(no_part):
+                            flat.append(no_part)
+                            seen.add(no_part.lower())
+        # 100000000% bättre: lägg till författar-efternamn + multi-författare + titel-ensam
+        try:
+            artist_variants = []
+            if audio.artist:
+                from .text import norm as _norm2
+                # split på multi-författare
+                for part in re.split(r"\s*(?:,|;|&|\boch\b|\band\b)\s*", audio.artist, flags=re.I):
+                    a_norm = _norm2(part)
+                    if a_norm:
+                        last = a_norm.split()[-1]
+                        if last and len(last) >= 3:
+                            artist_variants.append(last)
+                # unik
+                artist_variants = list(dict.fromkeys(artist_variants))[:2]
+            for base in list(flat)[:3]:
+                if base and audio.artist and base.lower() not in (audio.artist.lower()):
+                    for al in artist_variants:
+                        if al not in base.lower():
+                            cand2 = f"{base} {al}"
+                            if cand2.lower() not in seen and not looks_like_junk_title(cand2):
+                                flat.append(cand2)
+                                seen.add(cand2.lower())
+                    if base.lower() not in seen:
+                        flat.append(base)
+                        seen.add(base.lower())
+            # även prova titel utan årtal/siffror ("Isprinsessan 2007" -> "Isprinsessan")
+            for base in list(flat)[:2]:
+                no_year = re.sub(r"\b(19|20)\d{2}\b", "", base).strip()
+                no_year = " ".join(no_year.split())
+                if no_year and no_year != base and no_year.lower() not in seen and not looks_like_junk_title(no_year):
+                    flat.append(no_year)
+                    seen.add(no_year.lower())
+        except Exception:
+            pass
         query = next((c for c in flat if not looks_like_junk_title(c)),
                      strip_part_words(audio.album) or strip_part_words(audio.title) or fname)
-        # spara alla kandidater för fallback-loop
         query_candidates = flat if flat else [query]
 
         # Krav 21: redan organiserad bok -> arkiverad i historiken, ingen sökning.
@@ -805,7 +984,7 @@ class Engine:
             if needs:
                 try:
                     import requests
-                    resp = requests.get(cover_url, headers={"User-Agent": "audiobook-goodreads-sync/1.0"}, timeout=30)
+                    resp = requests.get(cover_url, headers={"User-Agent": "Audiobro/1.0"}, timeout=30)
                     head = resp.content[:4]
                     if resp.status_code == 200 and (head.startswith(b"\xff\xd8\xff") or head.startswith(b"\x89PNG") or head.startswith(b"GIF8")):
                         with open(cover_path, "wb") as fh:

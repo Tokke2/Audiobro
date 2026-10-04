@@ -1,6 +1,6 @@
 """Open Library som reserv-/brodatakälla.
 
-Goodreads ligger bakom AWS WAF och kan svara med en JS-utmaning (HTTP 202,
+Goodreads kan svara med en tillfällig blockering (HTTP 202,
 x-amzn-waf-action: challenge) som en skriptad klient inte kan lösa.
 Open Library har ett öppet JSON-API utan nyckel och indexerar även svenska
 titlar — perfekt för att (a) hitta boken när Goodreads är blockerat och
@@ -22,7 +22,7 @@ from .text import norm
 
 API = "https://openlibrary.org/search.json"
 FIELDS = "title,author_name,first_publish_year,language,series,edition_count,key,cover_i,publisher"
-UA = "audiobook-goodreads-sync/1.0 (personligt biblioteksverktyg)"
+UA = "Audiobro/1.0 (personligt biblioteksverktyg)"
 
 # Ord som bara stör i en sökning
 JUNK = {
@@ -62,7 +62,7 @@ class OpenLibrary:
                  session: Optional[requests.Session] = None) -> None:
         self.min_delay = min_delay
         self.cache_path = cache_path or os.path.join(
-            os.path.expanduser("~"), ".audiobook-goodreads", "openlibrary.json"
+            os.path.expanduser("~"), ".audiobro", "openlibrary.json"
         )
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": UA, "Accept": "application/json"})

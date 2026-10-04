@@ -1,15 +1,15 @@
-"""Hämta en aws-waf-token via en riktig webbläsare (Brave i första hand).
+"""Hämta en Goodreads-token via en riktig webbläsare (Brave i första hand).
 
-Goodreads AWS WAF-utmaning är ett JavaScript-test som en vanlig HTTP-klient
+Goodreads skydd är ett test som en vanlig HTTP-klient
 inte kan lösa, men en riktig Chromium-baserad webbläsare (Brave, Chromium,
 Chrome, Edge) löser den på några sekunder och sparar resultatet i cookien
-"aws-waf-token". Den cookien går sedan att återanvända i appens egna
+"Goodreads-token" (aws-waf-token). Den cookien går sedan att återanvända i appens egna
 requests — samma sessionstyp som din vanliga surfning.
 
 Så här går det till (helt lokalt, inget skickas någonstans):
   1. En tillfällig webbläsarprofil skapas.
   2. Webbläsaren startas headless och öppnar goodreads.com.
-  3. Vi väntar tills profilen innehåller en aws-waf-token-cookie.
+  3. Vi väntar tills profilen innehåller en Goodreads-token-cookie.
   4. Webbläsaren stängs och cookien returneras.
 
 På användarens dator föredras Brave; i testmiljöer fungerar Chromium/Chrome.
@@ -96,7 +96,7 @@ def _cookie_db_path(profile_dir: str) -> Optional[str]:
 
 
 def read_token_from_profile(profile_dir: str) -> str:
-    """Läs aws-waf-token ur en Chromium-profil (kopierar filerna för att kringå lås)."""
+    """Läs Goodreads-token ur en Chromium-profil (kopierar filerna för att kringå lås)."""
     db = _cookie_db_path(profile_dir)
     if not db:
         return ""
@@ -222,7 +222,7 @@ def fetch_waf_token(
     poll_interval: float = 1.5,
     on_status: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """Starta webbläsaren headless, lös WAF-utmaningen, returnera cookien.
+    """Starta webbläsaren headless, öppna Goodreads, returnera cookien.
 
     Kastar RuntimeError om ingen webbläsare finns eller tiden räcker ut.
     """
@@ -230,11 +230,11 @@ def fetch_waf_token(
     if not found:
         raise RuntimeError(
             "Ingen Chromium-baserad webbläsare hittades (Brave/Chromium/Chrome/Edge). "
-            "Installera en, eller klistra in aws-waf-token manuellt."
+            "Installera en, eller klistra in Goodreads-token manuellt."
         )
     name, path = found
     status = on_status or (lambda s: None)
-    status(f"Startar {name} headless för att lösa Goodreads WAF-utmaning …")
+    status(f"Startar {name} headless för att öppna Goodreads …")
     profile_dir = tempfile.mkdtemp(prefix="ags-browser-")
     debug_port = 9222 + (os.getpid() % 500)
     proc = subprocess.Popen(
@@ -267,8 +267,8 @@ def fetch_waf_token(
         shutil.rmtree(profile_dir, ignore_errors=True)
     if not token or len(token) <= 40:
         raise RuntimeError(
-            f"{name} hann inte lösa WAF-utmaningen inom {timeout:.0f} s. "
+            f"{name} hann inte öppna Goodreads inom {timeout:.0f} s. "
             "Prova igen, eller klistra in token manuellt från din vanliga webbläsare."
         )
-    status(f"Hämtade aws-waf-token via {name} ({len(token)} tecken).")
+    status(f"Hämtade Goodreads-token via {name} ({len(token)} tecken).")
     return token

@@ -9,9 +9,25 @@ from typing import Optional
 
 from .text import norm
 
-DEFAULT_PATH = os.path.join(
-    os.path.expanduser("~"), ".audiobook-goodreads", "history.json"
-)
+def _default_history_path() -> str:
+    # Audiobro primary, legacy fallback
+    new = os.path.join(os.path.expanduser("~"), ".audiobro", "history.json")
+    legacy = os.path.join(os.path.expanduser("~"), ".audiobook-goodreads", "history.json")
+    if os.path.isfile(new):
+        return new
+    if os.path.isfile(legacy):
+        # migrate
+        try:
+            import shutil
+            os.makedirs(os.path.dirname(new), exist_ok=True)
+            if not os.path.isfile(new):
+                shutil.copy2(legacy, new)
+        except Exception:
+            pass
+        return new
+    return new
+
+DEFAULT_PATH = _default_history_path()
 
 
 def identity_key(title: str, author: str, series: str = "", number: str = "",

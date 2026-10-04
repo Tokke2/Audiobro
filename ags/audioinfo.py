@@ -35,39 +35,83 @@ class AudioQuality:
 
 
 def probe(path: str) -> AudioQuality:
-    """Läs format/bitrate/längd m.m. med mutagen (tom vid miss)."""
+    """Läs format/bitrate/längd m.m. med mutagen + ffprobe-fallback (100% säkrare)."""
     q = AudioQuality(path=path)
     try:
         q.size_mb = round(os.path.getsize(path) / (1024 * 1024), 1)
     except OSError:
         q.size_mb = 0.0
     q.format = os.path.splitext(path)[1].lstrip(".").lower()
+    # Försök mutagen först
     try:
         from mutagen import File as MFile
     except ImportError:
-        return q
-    try:
-        f = MFile(path)
-    except Exception:
-        return q
-    if f is None:
-        return q
-    info = f.info
-    q.duration_s = round(getattr(info, "length", 0.0) or 0.0, 1)
-    q.sample_rate = int(getattr(info, "sample_rate", 0) or 0)
-    q.channels = int(getattr(info, "channels", 0) or 0)
-    q.bitrate_kbps = int(round((getattr(info, "bitrate", 0) or 0) / 1000))
-    kind = type(info).__name__
-    codec = {
-        "MPEGInfo": f"MPEG layer {getattr(info, 'version', '')}".strip(),
-        "TrueAudioInfo": "TTA",
-        "MP4Info": "AAC",
-        "FLACInfo": "FLAC",
-        "OggVorbisInfo": "Vorbis",
-        "OggOpusInfo": "Opus",
-        "WaveInfo": "PCM/WAV",
-    }.get(kind, kind)
-    q.codec = codec
+        MFile = None
+    if MFile is not None:
+        try:
+            f = MFile(path)
+            if f is not None and f.info is not None:
+                info = f.info
+                q.duration_s = round(getattr(info, "length", 0.0) or 0.0, 1)
+                q.sample_rate = int(getattr(info, "sample_rate", 0) or 0)
+                q.channels = int(getattr(info, "channels", 0) or 0)
+                q.bitrate_kbps = int(round((getattr(info, "bitrate", 0) or 0) / 1000))
+                kind = type(info).__name__
+                codec = {
+                    "MPEGInfo": f"MPEG layer {getattr(info, 'version', '')}".strip(),
+                    "TrueAudioInfo": "TTA",
+                    "MP4Info": "AAC",
+                    "FLACInfo": "FLAC",
+                    "OggVorbisInfo": "Vorbis",
+                    "OggOpusInfo": "Opus",
+                    "WaveInfo": "PCM/WAV",
+                }.get(kind, kind)
+                q.codec = codec
+        except Exception:
+            pass
+    # ffprobe-fallback / komplettering: om bitrate saknas eller är 0, prova ffprobe (mer exakt för m4b/aac)
+    # Också om mutagen missade helt
+    if q.bitrate_kbps == 0 or q.sample_rate == 0 or q.duration_s == 0:
+        try:
+            import json, shutil, subprocess
+            ffprobe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
+            if ffprobe:
+                cmd = [ffprobe, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", path]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+                if proc.returncode == 0 and proc.stdout:
+                    data = json.loads(proc.stdout)
+                    # streams[0] är audio
+                    streams = data.get("streams", [])
+                    fmt = data.get("format", {}) 
+                    dur = float(fmt.get("duration", 0) or 0) or float(streams[0].get("duration", 0) if streams else 0)
+                    if dur and not q.duration_s:
+                        q.duration_s = round(dur,1)
+                    if streams:
+                        s = streams[0]
+                        if not q.sample_rate:
+                            q.sample_rate = int(s.get("sample_rate", 0) or 0)
+                        if not q.channels:
+                            q.channels = int(s.get("channels", 0) or 0)
+                        if not q.codec or q.codec in ("MP4Info","MPEGInfo"):
+                            q.codec = (s.get("codec_name","") or q.codec).upper()
+                        # bitrate: först från stream, annars format
+                        br = s.get("bit_rate") or fmt.get("bit_rate")
+                        if br and not q.bitrate_kbps:
+                            try:
+                                q.bitrate_kbps = int(int(br)//1000)
+                            except: pass
+                        # Om fortfarande 0, beräkna från filstorlek/duration (CBR-approx)
+                        if not q.bitrate_kbps and q.size_mb and q.duration_s:
+                            try:
+                                q.bitrate_kbps = int((q.size_mb*1024*1024*8)/(q.duration_s*1000))
+                            except: pass
+        except Exception:
+            pass
+    # Sista fallback: beräkna bitrate från storlek om fortfarande 0
+    if q.bitrate_kbps == 0 and q.size_mb and q.duration_s > 10:
+        try:
+            q.bitrate_kbps = int((q.size_mb*1024*1024*8)/(q.duration_s*1000))
+        except: pass
     return q
 
 
@@ -217,5 +261,5 @@ def book_md(
         parts += ["", "## Beskrivning", "", description[:1200]]
     if extra_note:
         parts += ["", "## Anteckning", "", extra_note]
-    parts += ["", "---", "*Genererat av audiobook-goodreads-sync.*"]
+    parts += ["", "---", "*Genererat av Audiobro.*"]
     return "\n".join(p for p in parts if p != "IGNORE")

@@ -1,4 +1,4 @@
-"""audiobook-goodreads-sync (ags)
+"""Audiobro (ags)
 
 Synkar metadata för dina ljudboksfiler (mp3/m4b/flac/ogg) mot Goodreads:
 titel, författare, serie och delnummer i serien.

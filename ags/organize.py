@@ -350,7 +350,7 @@ def execute(proposal: Proposal, group: list[AudioFile], out_root: str,
 
             resp = requests.get(
                 cover_url,
-                headers={"User-Agent": "audiobook-goodreads-sync/1.0"},
+                headers={"User-Agent": "Audiobro/1.0"},
                 timeout=30)
             head = resp.content[:4]
             if resp.status_code == 200 and (

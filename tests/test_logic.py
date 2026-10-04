@@ -431,7 +431,7 @@ def test_waf_challenge_detection():
 
 def test_blocked_client_message_mentions_workarounds():
     exc = GoodreadsBlocked("HTTP 202")
-    assert "aws-waf-token" in exc.hint
+    assert "Goodreads-token" in exc.hint or "aws-waf-token" in exc.hint
     assert "skärmbild" in exc.hint.lower() or "OCR" in exc.hint
 
 
@@ -1044,7 +1044,7 @@ def test_match_logging_explains_why_no_match(caplog):
 
 
 def test_waf_log_includes_token_state(caplog):
-    """Vid WAF-blockad ska loggen säga om en token skickades eller ej."""
+    """Vid blockad ska loggen säga om en token skickades eller ej."""
     import logging as _logging
 
     from ags import goodreads
@@ -1068,7 +1068,7 @@ def test_waf_log_includes_token_state(caplog):
         except goodreads.GoodreadsBlocked:
             pass
     text = "\n".join(r.getMessage() for r in caplog.records)
-    assert "WAF-blockad" in text and "aws-waf-token: ej satt" in text
+    assert "Goodreads blockerad" in text and "Goodreads-token: ej satt" in text
 
 
 # ---------------------------------------------------------------- cacherensning

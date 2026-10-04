@@ -17,7 +17,7 @@ from typing import Optional
 import requests
 
 SV_API = "https://sv.wikipedia.org/w/api.php"
-UA = "audiobook-goodreads-sync/1.0 (personligt biblioteksverktyg)"
+UA = "Audiobro/1.0 (personligt biblioteksverktyg)"
 EN_TAIL_RE = re.compile(r"\s*\((?:novel|book|roman|bok)\)\s*$", re.I)
 ORIGINAL_KEYS = ("originaltitel", "original title", "engelsk titel", "original_title", "titel (engelska)")
 
@@ -75,7 +75,7 @@ class TitleBridge:
     def __init__(self, cache_path: Optional[str] = None,
                  session: Optional[requests.Session] = None) -> None:
         self.cache_path = cache_path or os.path.join(
-            os.path.expanduser("~"), ".audiobook-goodreads", "titles.json"
+            os.path.expanduser("~"), ".audiobro", "titles.json"  # legacy handled via settings._config_dir
         )
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": UA, "Accept": "application/json"})
