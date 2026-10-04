@@ -360,6 +360,7 @@ class Engine:
         )
         if needs_bridge:
             _log.info("goodreads gav 0 träffar för %r — provar originaltitlar via Wikipedia", q)
+            _log.debug("QUERY DETAIL 9555%%: title=%r author=%r clean_q=%r series=%r part=%r folder=%r fname=%r", title, author, clean_query(title, author) if "clean_query" in dir() else q, split_series(title)[0] if "split_series" in dir() else title, "", folder_title if "folder_title" in locals() else "", fname if "fname" in locals() else "")
             for cand in (self.bridge.lookup(split_series(title)[0]) or [])[:2]:
                 _log.info("originaltitel-kandidat: %r", cand)
                 self.on_status(f"Provar originaltitel: {cand}")

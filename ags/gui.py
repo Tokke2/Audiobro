@@ -457,7 +457,11 @@ class App:
         nb.pack(fill="both", expand=True, padx=8, pady=4)
         # Ny 4-fliks struktur — flikar högst upp direkt under banner
         self.tab_settings = ttk.Frame(nb)
-        self.tab_organize = ttk.Frame(nb)  # 2. Organisera/Granska — innehåller Scan + Review + Manual som sektioner
+        self.tab_organize = ttk.Frame(nb)  # 2. Organisera/Granska — innehåller Scan + Review + Manual
+        try:
+            self.tab_organize.grid_rowconfigure(99, weight=1)
+            self.tab_organize.grid_columnconfigure(0, weight=1)
+        except: pass
         self.tab_log = ttk.Frame(nb)
         self.tab_hist = ttk.Frame(nb)
         # Behåll gamla refs för bakåtkompat (så _build_scan som använder tab_review funkar)
@@ -1206,7 +1210,7 @@ class App:
         # Tabell och verktyg flyttade till egen flik 3. Granska — egen pack-layout (gammal beprövad, h=1 fix)
         review_parent = getattr(self, "tab_review", parent)
         # Använd pack i Granska-fliken — bottom-paneler först, sedan tree expand (som gamla fungerande)
-        self.detail = tk.Text(review_parent, height=4, wrap="word", bg="#FFFFFF", fg="#000000", relief="flat", bd=1, highlightthickness=1, highlightbackground="#FFDAB9", font=("TkDefaultFont", 10, "bold"), padx=8, pady=6, spacing1=2, spacing3=4)  # FIX 2026-10-04: h=4 ger 100px mer till tabellen (var 7 → 170px detaljruta → tree bara 8px)
+        self.detail = tk.Text(review_parent, height=1, wrap="word", bg="#FFFFFF", fg="#000000", relief="flat", bd=1, highlightthickness=1, highlightbackground="#FFDAB9", font=("TkDefaultFont", 9), padx=6, pady=2, spacing1=1, spacing3=1)  # FIX 2026-10-04: h=1 ~25px tabell 250px+ 2026-10-04: h=2 ger max till tabellen (var 7→170px, 4→104px, nu 2→~45px — tabell får 200px+)
         self.detail.pack(fill="x", side="bottom", padx=6, pady=(0, 4))
         # ④ Organisera — tydligt grupperad verktygsrad med steg-nummer
         bottom = tk.Frame(review_parent, bg=bg, bd=1, relief="solid", highlightbackground=TOK.get("border","#FFE4C4"), highlightthickness=1)

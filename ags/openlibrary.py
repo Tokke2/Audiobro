@@ -49,7 +49,7 @@ def clean_query(title: str, artist: str) -> str:
     from .text import split_series
 
     t = split_series(title or "")[0].strip()
-    t = re.sub(r"^\d+\s*[-_.]\s*", "", t)
+    t = re.sub(r"^\d+\s*[-_.]?\s*", "", t)  # FIX: även "110 Mission" utan dash
     a = clean_artist(artist)
     q = f"{t} {a}".strip()
     return re.sub(r"\s+", " ", q)[:160]
