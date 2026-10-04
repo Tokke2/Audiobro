@@ -1307,7 +1307,8 @@ class App:
             self.tree.tag_configure("dup", background="#F5EEFF", foreground="#7A3B9C", font=("TkDefaultFont", 9))
             self.tree.tag_configure("warn", background="#FFF6E5", foreground="#9A6A0A", font=("TkDefaultFont", 9))
             self.tree.tag_configure("blocked", background="#FDEDEC", foreground="#A93226", font=("TkDefaultFont", 9))
-            self.tree.tag_configure("none", background="#FFFFFF", foreground="#5A5A5A", font=("TkDefaultFont", 9))
+            # 2026-10-04: ej matchad syns tydligt — ljusgrå bakgrund + mörkare text (tidigare vit → osynlig mot vit rad)
+            self.tree.tag_configure("none", background="#F2F3F5", foreground="#3B3B3B", font=("TkDefaultFont", 9))
             self.tree.tag_configure("done", background="#EAF2FF", foreground="#2E5AAC", font=("TkDefaultFont", 9))
             self.tree.tag_configure("ignored_dup", background="#F0F0F0", foreground="#888888", font=("TkDefaultFont", 9, "italic"))
         except Exception:
@@ -1424,7 +1425,24 @@ class App:
             self._engine()
         self.client.set_browser_token(tok)
         self._save_settings(silent=True)   # krav 22: token sparas mellan körningar
-        self.set_status("Token sparad — Goodreads bör fungera nu.")
+        # testA alltid — verifiera direkt att token funkar (snabb Goodreads-sök)
+        self.set_status("Token sparad — testar mot Goodreads…")
+        try:
+            # liten testsök som alltid ska ge träff om token är giltig och inte blockerad
+            books = self.client.search_best("Harry Potter", limit=2) if hasattr(self.client, "search_best") else []
+            if getattr(self.client, "blocked", False):
+                messagebox.showwarning("Token test", "Token sparad men Goodreads är blockerad (WAF). Prova 'Lås upp via webbläsare' eller vänta 5 min.")
+                self.set_status("Token sparad — men Goodreads blockerad (test misslyckades)")
+            elif books:
+                messagebox.showinfo("Token OK", f"Token fungerar! Hittade {len(books)} träff(ar) för 'Harry Potter'.")
+                self.set_status("Token OK — Goodreads svarar ✅")
+            else:
+                messagebox.showwarning("Token test", "Token sparad men testsök gav 0 träffar. Kolla att token är korrekt kopierad (hela värdet).")
+                self.set_status("Token sparad — testsök gav 0 träffar")
+        except Exception as exc:
+            LOG.debug("token test fel: %s", exc)
+            messagebox.showwarning("Token", f"Token sparad, men testet kastade fel: {exc}")
+            self.set_status(f"Token sparad — test fel: {exc}")
 
     def _show_waf_help(self) -> None:
         LOG.info("knapp: Goodreads blockerad? (hjälptext)")
@@ -4410,30 +4428,25 @@ class App:
             LOG.debug("kunde inte tillämpa språk: %s", exc)
         # Uppdatera alla synliga texter direkt — hela appen byter språk utan omstart
         try:
-            # Notebook tabs
+            # Notebook tabs — 4 flikar högst upp (fix: tab_review var hårdkodad "3. Granska" → skrev över 2. Organisera/Granska)
             try:
                 import tkinter.ttk as ttk
                 for child in self.root.winfo_children():
                     if isinstance(child, ttk.Notebook):
                         nb_w = child
-                        keys = ["tab_scan","tab_review","tab_manual","tab_ocr","tab_reco","tab_log","tab_hist"]
-                        # Sätt tab-texter via widget, inte index — robust vid 7 flikar
-                        try: nb_w.tab(self.tab_scan, text=self._t("tab_scan"))
+                        # 4 riktiga flikar i nya designen
+                        try: nb_w.tab(self.tab_settings, text=self._t("tab_settings"))
                         except: pass
-                        try: nb_w.tab(self.tab_review, text="3. Granska")
-                        except: pass
-                        try: nb_w.tab(self.tab_manual, text=self._t("tab_manual"))
-                        except: pass
-                        try: nb_w.tab(self.tab_ocr, text=" 📝 Inklistra text ")
-                        except: pass
-                        try: nb_w.tab(self.tab_reco, text=self._t("tab_reco"))
-                        except: pass
-                        try: nb_w.tab(self.tab_missing, text=" 📚 Saknade i serie ")
+                        try: nb_w.tab(self.tab_organize, text=self._t("tab_organize"))
                         except: pass
                         try: nb_w.tab(self.tab_log, text=self._t("tab_log"))
                         except: pass
                         try: nb_w.tab(self.tab_hist, text=self._t("tab_hist"))
                         except: pass
+                        # Bakåtkompat — gamla refs pekar på samma frame, ignorera fel tyst
+                        for legacy in ("tab_scan","tab_review","tab_manual","tab_ocr","tab_reco","tab_missing"):
+                            try: nb_w.tab(getattr(self, legacy), text=self._t(legacy))
+                            except: pass
                         break
             except Exception:
                 pass

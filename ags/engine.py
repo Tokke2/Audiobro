@@ -437,12 +437,23 @@ class Engine:
 
         # Sökfråga: välj den mest boklika källan (titel -> filnamn -> album -> serie).
         # Serie-prefix rensat: "Fjällbacka 01 - Isprinsessan" -> "Isprinsessan"
-        fname = os.path.splitext(os.path.basename(rep.path))[0]
+        # Normalisera separators så Windows-paths med "\" funkar även på Linux-test och vice versa
+        _norm_path = (rep.path or "").replace("\\", "/")
+        fname = os.path.splitext(os.path.basename(_norm_path))[0]
         fname = re.sub(r"\s*[-_.]?\s*\d{1,3}\s*$", "", fname)
+        # Rensa underrubriker som \" - A novel...\" redan här så de inte blir sökfråga
+        fname = re.sub(r"\s*[-–—]\s*A novel.*$", "", fname, flags=re.I).strip()
+        # Rensa (Unabridged)/(Abridged) etc från fil- och mappnamn — annars \"Contention (Unabridged)\" ger 0 träffar
+        fname = re.sub(r"\s*\((?:Unabridged|Abridged|Complete|Uncut)\)\s*$", "", fname, flags=re.I).strip()
         # mappnamnet är ofta bokliast ("The Green Mile (Disc 01)") när taggar
         # är rip-skrot ("Track 01")
-        folder_title = DISC_RE.sub(
-            " ", os.path.basename(os.path.dirname(rep.path)) or "").strip()
+        folder_raw = os.path.basename(os.path.dirname(_norm_path)) or ""
+        folder_title = DISC_RE.sub(" ", folder_raw).strip()
+        folder_title = re.sub(r"\s*\((?:Unabridged|Abridged|Complete|Uncut)\)\s*$", "", folder_title, flags=re.I).strip()
+        folder_title = re.sub(r"\s*[-–—]\s*A novel.*$", "", folder_title, flags=re.I).strip()
+        # Om mappen är import-roten \"lazylibrarian\" ska den inte användas som titel
+        if folder_title.lower() == "lazylibrarian":
+            folder_title = ""
         # rena titlar utan serieprefix har högsta prio — men serie-tolkad
         # titelrest och serie+nummer går före "Chapter 01"-skrot.
         clean_title = clean_title_from_hint(audio.title) or clean_title_from_hint(audio.album)
@@ -489,23 +500,33 @@ class Engine:
                             seen.add(no_part.lower())
         # 100000000% bättre: lägg till författar-efternamn + multi-författare + titel-ensam
         try:
-            artist_variants = []
+            # Behåll original-efternamn med stor bokstav (\"Hobb\" inte \"hobb\") — fix 2026-10-04
+            artist_variants = []  # list[(norm_last, original_last)]
             if audio.artist:
-                from .text import norm as _norm2
-                # split på multi-författare
                 for part in re.split(r"\s*(?:,|;|&|\boch\b|\band\b)\s*", audio.artist, flags=re.I):
-                    a_norm = _norm2(part)
-                    if a_norm:
-                        last = a_norm.split()[-1]
-                        if last and len(last) >= 3:
-                            artist_variants.append(last)
-                # unik
-                artist_variants = list(dict.fromkeys(artist_variants))[:2]
+                    part = part.strip()
+                    if not part:
+                        continue
+                    # original efternamn (sista ordet, behåll casing)
+                    orig_last = part.split()[-1].strip(" .,-") if part.split() else ""
+                    if orig_last and len(orig_last) >= 3 and orig_last.lower() not in {"unknown","okänd","various"}:
+                        from .text import norm as _norm2
+                        norm_last = _norm2(orig_last)
+                        if norm_last:
+                            artist_variants.append((norm_last, orig_last))
+                # unik på norm_last, behåll original
+                seen_lv = set()
+                uniq = []
+                for nl, ol in artist_variants:
+                    if nl not in seen_lv:
+                        seen_lv.add(nl)
+                        uniq.append((nl, ol))
+                artist_variants = uniq[:2]
             for base in list(flat)[:3]:
                 if base and audio.artist and base.lower() not in (audio.artist.lower()):
-                    for al in artist_variants:
-                        if al not in base.lower():
-                            cand2 = f"{base} {al}"
+                    for nl, ol in artist_variants:
+                        if nl not in base.lower() and ol.lower() not in base.lower():
+                            cand2 = f"{base} {ol}"
                             if cand2.lower() not in seen and not looks_like_junk_title(cand2):
                                 flat.append(cand2)
                                 seen.add(cand2.lower())

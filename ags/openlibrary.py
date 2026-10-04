@@ -49,8 +49,18 @@ def clean_query(title: str, artist: str) -> str:
     from .text import split_series
 
     t = split_series(title or "")[0].strip()
+    # Normalisera curly quotes → rak apostrof (Goodreads söker bäst med ')
+    t = t.replace("’", "'").replace("‘", "'").replace("´", "'")
+    # Rensa underrubriker som \" - A novel of folk horror\" / \" - A Novel ...\" (skymmer sökningen)
+    t = re.sub(r"\s*[-–—]\s*A novel.*$", "", t, flags=re.I).strip()
+    t = re.sub(r"\s*[-–—]\s*Welcome to the Multiverse.*$", "", t, flags=re.I).strip()
     t = re.sub(r"^\d+\s*[-_.]?\s*", "", t)  # FIX: även "110 Mission" utan dash
+    # Filtrera skräp-titel som \"lazylibrarian\"
+    if (t or "").strip().lower() == "lazylibrarian":
+        t = ""
     a = clean_artist(artist)
+    # Normalisera även artist (curly → rak)
+    a = a.replace("’", "'").replace("‘", "'")
     q = f"{t} {a}".strip()
     return re.sub(r"\s+", " ", q)[:160]
 

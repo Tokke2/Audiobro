@@ -409,6 +409,8 @@ JUNK_TITLE_MARKERS = (
     "books collection", "hardback",
     # 100000% — rip-skrot från taggar
     "unknown album", "unknown artist", "unknown", "untitled",
+    # 2026-10-04: importmappen ska aldrig bli titel
+    "lazylibrarian",
 )
 
 # "Track 01" / "Disc 2" / "Spår 3" är rip-skrot, inte boktitlar
@@ -588,3 +590,43 @@ def clean_series(name: str) -> str:
     n = re.sub(r"\s+series$", "", n, flags=re.I)
     n = re.sub(r"\s+trilogy$|\s+trilogi$", "", n, flags=re.I)
     return n.strip()
+
+# --- 2026-10-04: Book friend hjärta — endast namn jag väljer, obscena bäljs bort ---
+_OBSCENE_SUBSTRINGS = {
+    "cunt","pussy","dick","cock","asshole","fuck","shit","bitch","whore","slut",
+    "nigger","nigga","faggot","fag ","kuk","kuken","fitta","fittan","hora","horan",
+    "bög","bögj","mongo","cp ","idiot ","retard","kallad","knulla","knull",
+}
+def is_obscene_name(name: str) -> bool:
+    """True om namnet innehåller obscena ord — ska bäljas bort från release notes."""
+    low = (name or "").lower()
+    # normalisera leet och ta bort accent för att fånga varianter
+    low = strip_accents(low)
+    low = re.sub(r"[^a-z0-9]+", " ", low).strip()
+    # korta namn som bara är svordom
+    for bad in _OBSCENE_SUBSTRINGS:
+        b = bad.strip()
+        if len(b) >= 2 and b in low:
+            # undvik falska positiva: \"dick\" i \"dickens\" är OK om namnet är längre och innehåller mellanslag + Dickens
+            # men \"dick\" ensamt eller som del av kort ord ska blockas
+            if b in {"ass","fag"}:
+                if re.search(rf"\b{re.escape(b)}\b", low):
+                    return True
+                continue
+            if b == "dick" and "dickens" in low:
+                # \"Charles Dickens\" är OK
+                continue
+            return True
+    return False
+
+def filter_donor_names(names: list[str]) -> list[str]:
+    """Filtrera bort obscena namn — endast valt namn behålls för hjärta i release notes."""
+    out = []
+    for n in names or []:
+        nn = (n or "").strip()
+        if not nn or len(nn) > 40:
+            continue
+        if is_obscene_name(nn):
+            continue
+        out.append(nn)
+    return out
