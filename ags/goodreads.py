@@ -123,11 +123,20 @@ class Goodreads:
 
         Hämtas i webbläsarens devtools (Application -> Cookies -> goodreads.com
         -> Goodreads-token (aws-waf-token)). Då slipper appen blockeringen.
+        Sätter cookien för både .goodreads.com och www.goodreads.com för robusthet.
         """
         token = (token or "").strip()
         if token:
-            self.session.cookies.set("aws-waf-token", token, domain=".goodreads.com")
+            # Sätt för båda domänerna — Goodreads kan svara från www eller apex
+            for dom in (".goodreads.com", "www.goodreads.com", "goodreads.com"):
+                try:
+                    self.session.cookies.set("aws-waf-token", token, domain=dom, path="/")
+                except Exception:
+                    pass
+            # Spara rå token för loggning/diagnos (visas aldrig i klartext i logg)
+            self._browser_token = token  # type: ignore[attr-defined]
             self.blocked = False
+            log.info("Goodreads-token satt (%d tecken) för %s", len(token), ", ".join([".goodreads.com","www.goodreads.com"]))
 
     def get(self, url: str, use_cache: bool = True) -> str:
         if use_cache:

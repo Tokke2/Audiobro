@@ -1442,7 +1442,7 @@ class App:
                 if len(tok) < 100:
                     messagebox.showwarning("Goodreads-token", "Token sparad men verifiering gav 0 träffar.\n\nToken ser ut att vara avklippt (%d tecken — förväntat 300+).\nKopiera hela Value för aws-waf-token:\nChrome/Brave → F12 → Application → Storage → Cookies → https://www.goodreads.com → aws-waf-token → högerklicka Value → Copy value.\nKlistra sedan in hela värdet i fältet och klicka 'Use token' igen." % len(tok))
                 else:
-                    messagebox.showwarning("Goodreads-token", "Token sparad men verifiering gav 0 träffar (%d tecken token).\n\nKontrollera att token är färsk (öppna valfri Goodreads-sida i webbläsaren först så att ny aws-waf-token sätts), kopiera sedan hela värdet igen." % len(tok))
+                    messagebox.showwarning("Goodreads-token", "Token sparad men verifiering gav 0 träffar (%d tecken token).\n\nMöjliga orsaker:\n• Token är inte färsk — öppna först valfri Goodreads-sida i din vanliga webbläsare så ny aws-waf-token sätts, kopiera sedan hela värdet igen.\n• VPN är aktivt och Goodreads blockerar VPN-exitnoden — prova att tillfälligt inaktivera VPN.\n• Rekommenderat: Använd i stället \"Unlock via my browser (Brave/Chromium) when blocked\" ovanför — den hämtar token automatiskt utan manuell kopiering." % len(tok))
                 self.set_status("Token sparad — verifiering gav 0 träffar (token %d tecken)" % len(tok))
         except Exception as exc:
             LOG.debug("token test fel: %s", exc)
