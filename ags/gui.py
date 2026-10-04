@@ -3886,7 +3886,7 @@ class App:
             try:
                 rp = getattr(self, "tab_review", None)
                 tf = getattr(self, "_tree_frame", None)
-                LOG.info("TABLE VISIBLE CHECK: review %dx%d tree_frame %dx%d tree %dx%d viewable=%s children=%d", 
+                LOG.debug("TABLE VISIBLE CHECK: review %dx%d tree_frame %dx%d tree %dx%d viewable=%s children=%d", 
                     rp.winfo_width() if rp and rp.winfo_exists() else -1, rp.winfo_height() if rp and rp.winfo_exists() else -1,
                     tf.winfo_width() if tf and tf.winfo_exists() else -1, tf.winfo_height() if tf and tf.winfo_exists() else -1,
                     self.tree.winfo_width() if self.tree.winfo_exists() else -1, self.tree.winfo_height() if self.tree.winfo_exists() else -1,

@@ -276,6 +276,7 @@ class Engine:
         # False = matcha på nytt. None = hoppa över utan att fråga.
         self.on_history_hit = on_history_hit
         self._unlocked = False
+        self._unlock_tries = 0
 
     # ---------------------------------------------------------------- källor
     def resolve(self, title: str, author: str, part: str = "") -> tuple[list, str, str]:
@@ -327,19 +328,29 @@ class Engine:
                         merge(self.client.search_best(part_q, limit=4))
             except GoodreadsBlocked as exc:
                 _log.warning("goodreads blockerad för %r: %s", q, exc)
-                if self.options.auto_token and self.token_fetcher and not self._unlocked:
+                # Tillåt upp till 3 automatiska upplåsningar per scan (inte bara 1) — vid stora bibliotek kan token hinna gå ut mitt i
+                if self.options.auto_token and self.token_fetcher and getattr(self, "_unlock_tries", 0) < 3:
+                    self._unlock_tries = getattr(self, "_unlock_tries", 0) + 1
                     self._unlocked = True
-                    self.on_status("Goodreads blockerad — låser upp via din webbläsare …")
+                    self.on_status(f"Goodreads blockerad — låser upp via din webbläsare … (försök {self._unlock_tries}/3)")
                     try:
                         token = self.token_fetcher()
                         if token:
                             self.client.set_browser_token(token)
+                            # nollställ blockerad-flaggan redan i set_browser_token, prova igen
                             books = self.client.search_best(q, limit=self.options.max_candidates)
                             if books:
                                 note = (note + " | " if note else "") + "upplåst via webbläsar-token"
-                    except (GoodreadsBlocked, GoodreadsError):
+                                _log.info("upplåsning lyckades — fick %d träffar efter token (försök %d)", len(books), self._unlock_tries)
+                            else:
+                                _log.info("upplåsning gav token men 0 träffar för %r — provar nästa fråga/fallback", q)
+                        else:
+                            _log.warning("token_fetcher returnerade tom token (försök %d)", self._unlock_tries)
+                    except (GoodreadsBlocked, GoodreadsError) as excb:
+                        _log.warning("upplåsning misslyckades fortfarande blockerad: %s", excb)
                         books = []
                     except Exception as exc2:  # noqa: BLE001
+                        _log.warning("Upplåsning misslyckades: %s", exc2)
                         self.on_status(f"Upplåsning misslyckades: {exc2}")
                 if not books:
                     note = (note + " | " if note else "") + "Goodreads blockerad"

@@ -226,6 +226,20 @@ def fetch_waf_token(
 
     Kastar RuntimeError om ingen webbläsare finns eller tiden räcker ut.
     """
+    # Tydlig diagnos om websocket-client saknas — annars blir felet diffust timeout
+    try:
+        import importlib.util as _ilu
+        if _ilu.find_spec("websocket") is None:
+            raise RuntimeError(
+                "Tillägg saknas: websocket-client är inte installerat.\n"
+                "Det krävs för 'Lås upp via min webbläsare'.\n\n"
+                "Fix: Öppna Audiobro → Inställningar → 'Kontrollera tillägg' → bocka i websocket-client → Installera.\n"
+                "Eller kör i terminal: pip install websocket-client"
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
     found = find_browser(executable)
     if not found:
         raise RuntimeError(

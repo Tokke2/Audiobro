@@ -209,35 +209,93 @@ def group_files(files: list[AudioFile]) -> list[list[AudioFile]]:
     """Gruppera filer som hör till samma ljudbok/album.
 
     Regler:
-      * filer med samma ALBUM-tagg hamnar ihop
-      * annars: samma mapp + samma normaliserade titel-prefix
+      * filer med samma ALBUM-tagg hamnar ihop (Disc/CD-rensat så CD1/CD2 hör ihop)
+      * annars: samma mapp (Disc-rensad) + samma normaliserade titel-prefix
       * en ensam fil blir sin egen grupp
+      * filer i Disc-mappar eller med Track-junk slås alltid ihop (inte per spår)
     """
+    # TEXT_DISC_RE är bred: " (Disc 12)" / " - CD2 " etc — biblioteks DISC_RE är smal
+    try:
+        from .text import DISC_RE as TEXT_DISC_RE, TRACK_JUNK_RE
+    except Exception:
+        TEXT_DISC_RE = DISC_RE
+        TRACK_JUNK_RE = re.compile(r"^(?:track|spår|disc|cd|del|part|chapter|kapitel)\s*\d{0,2}$", re.I)
+
     by_album: dict[str, list[AudioFile]] = {}
     rest: list[AudioFile] = []
     for f in files:
         if f.album and not looks_like_junk_title(f.album):
-            # samma album (+ artist om taggad) hör ihop även över CD1/CD2-mappar
-            by_album.setdefault((norm(f.album), norm(f.artist)), []).append(f)
+            # samma album (+ artist) hör ihop även över Disc1/Disc2 — rensa disc ur albumnyckel
+            clean_album = TEXT_DISC_RE.sub(" ", f.album).strip()
+            clean_album = DISC_RE.sub(" ", clean_album).strip()
+            clean_album = re.sub(r"\(\s*\)", "", clean_album).strip()
+            clean_album = re.sub(r"\s{2,}", " ", clean_album).strip() or f.album
+            by_album.setdefault((norm(clean_album), norm(f.artist)), []).append(f)
         else:
             rest.append(f)
 
     groups: list[list[AudioFile]] = list(by_album.values())
     by_folder: dict[str, list[AudioFile]] = {}
     for f in rest:
-        # "Bok (Disc 01)" och "Bok (Disc 02)" är samma bok -> samma mappnyckel
-        key = DISC_RE.sub(" ", os.path.dirname(f.path)).strip()
-        by_folder.setdefault(key or os.path.dirname(f.path), []).append(f)
+        raw = f.path or ""
+        # Robust dirname för både Windows (\\) och POSIX (/) — os.path på Linux förstår inte \\
+        import ntpath as _nt
+        d = _nt.dirname(raw) if "\\" in raw else os.path.dirname(raw)
+        # Normalisera disc ur mappnyckel (båda regexen)
+        key = TEXT_DISC_RE.sub(" ", d).strip()
+        key = DISC_RE.sub(" ", key).strip()
+        key = re.sub(r"\(\s*\)", "", key).strip()
+        key = re.sub(r"\s{2,}", " ", key).strip()
+        by_folder.setdefault(key or d, []).append(f)
+
     for folder, fs in by_folder.items():
         if len(fs) == 1:
             groups.append(fs)
             continue
+        # Om någon fil i denna mapp är från en Disc/CD/skiva-struktur -> slå ihop allt till EN bok
+        is_disc_book = False
+        try:
+            for _f in fs:
+                if DISC_RE.search(_f.path) or TEXT_DISC_RE.search(_f.path):
+                    is_disc_book = True
+                    break
+            # även om mappen själv innehöll disc innan rensning är det disc-bok
+            if not is_disc_book and (DISC_RE.search(folder) or TEXT_DISC_RE.search(folder)):
+                is_disc_book = True
+        except Exception:
+            pass
+        if is_disc_book:
+            groups.append(fs)
+            continue
+
+        # Annars: splitta på titel-prefix, men Track-junk ska INTE splittras per spår
         sub: dict[str, list[AudioFile]] = {}
+        junk: list[AudioFile] = []
         for f in fs:
-            base = os.path.splitext(os.path.basename(f.path))[0]
+            import ntpath as _nt2
+            raw_base = _nt2.basename(f.path) if "\\" in f.path else os.path.basename(f.path)
+            base = os.path.splitext(raw_base)[0]
             base = SPLIT_PART_RE.sub(" ", base)   # "… (1 of 2)" == "… (2 of 2)"
-            sub.setdefault(title_key(re.sub(r"\b\d{1,3}\s*$", "", base)), []).append(f)
+            stripped = base.strip()
+            # Track01 / Disc 2 etc är rip-skrot — hör till samma bok, inte varsin bok
+            if TRACK_JUNK_RE.match(stripped) or looks_like_junk_title(stripped):
+                junk.append(f)
+                continue
+            k = title_key(re.sub(r"\b\d{1,3}\s*$", "", base))
+            if not k or k in ("track", "spar", "disc", "cd"):
+                junk.append(f)
+            else:
+                sub.setdefault(k, []).append(f)
+        if junk:
+            # alla junk-spår i samma mapp är samma bok (t.ex. Track01..Track12 från flera discs som redan slagits ihop ovan)
+            # om is_disc_book redan hanterats är junk här från icke-disc men ändå track-namnad mapp
+            if len(junk) >= 1:
+                # om sub är tom -> bara junk finns -> en grupp
+                # om både junk och riktiga titlar finns -> junk hör oftast till samma bok som subtiteln, men behåll separat för säkerhet
+                # här: slå ihop junk till en grupp
+                groups.append(junk)
         groups.extend(sub.values())
+
     for g in groups:
         g.sort(key=lambda f: _track_sort(f))
     groups.sort(key=lambda g: g[0].path.lower())
