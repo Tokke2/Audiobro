@@ -1,9 +1,8 @@
 @echo off
 setlocal
-chcp 65001 >nul
-title Audiobro -- installer och start v1.0.0
+title Audiobro - installer och start v1.0.0
 echo ==========================================
-echo  Audiobro — installerar Python + tillagg
+echo  Audiobro - installerar Python + tillagg
 echo  och startar appen (v1.0.0)
 echo ==========================================
 echo.
@@ -18,10 +17,10 @@ if not defined PY (
 )
 
 if not defined PY (
-  echo [1/4] Python hittades inte — forsoker installera via winget...
+  echo [1/4] Python hittades inte - forsoker installera via winget...
   where winget >nul 2>&1
   if %errorlevel%==0 (
-    echo   Korer: winget install Python.Python.3.12
+    echo   Kor: winget install Python.Python.3.12
     winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
     if %errorlevel%==0 (
       echo   Klart! Stang detta fonster, oppna en NY terminal och kor bat-filen igen.
@@ -54,16 +53,16 @@ echo.
 echo [2/4] Uppdaterar pip...
 %PY% -m pip install --upgrade pip
 if %errorlevel% neq 0 (
-  echo Varning: pip upgrade misslyckades — forsoker anda fortsatta...
+  echo Varning: pip upgrade misslyckades - forsoker anda fortsatta...
 )
 echo.
 
 echo [3/4] Installerar/uppdaterar tillagg...
 if exist requirements.txt (
-  echo   Hittade requirements.txt — kor pip install -r requirements.txt --upgrade
+  echo   Hittade requirements.txt - kor pip install -r requirements.txt --upgrade
   %PY% -m pip install --upgrade -r requirements.txt
 ) else (
-  echo   Ingen requirements.txt — installerar standardpaket
+  echo   Ingen requirements.txt - installerar standardpaket
   %PY% -m pip install --upgrade beautifulsoup4 lxml requests mutagen Pillow rapidfuzz
 )
 if %errorlevel% neq 0 (
@@ -87,7 +86,7 @@ if exist Audiobro.pyw (
   start "" %PY% -m ags.gui
 ) else (
   echo   Hittar inte Audiobro.pyw i %CD%
-  dir /b 2>nul | head
+  dir /b 2>nul
   pause
   exit /b 1
 )
