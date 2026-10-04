@@ -138,7 +138,7 @@ STRINGS = {
         "reco_hint": "nästa del i serier + fler av samma författare",
         "hist_header": "📚 Historik — redan klara",
         "hist_hint": "här hamnar organiserade böcker • de matchas aldrig igen",
-        "empty_hint": "✨ Ingen skanning än — dra en mapp hit eller klicka  ✨ Skanna & matcha  🎧\nBörja litet för snabb test, sen hela biblioteket  •  1000000000% bättre tom-läge 💖",
+        "empty_hint": "✨ Ingen skanning än — dra en mapp hit eller klicka  ✨ Skanna & matcha  🎧\nBörja litet för snabb test, sen hela biblioteket",
         "dedup_none": "Inga dubbletter hittade 🎉\n\nInga böcker delade titel/författare + ljud-fingerprint över 0.82.",
         "dedup_status_none": "Inga dubbletter — allt ser unikt ut.",
         "dedup_hint": "Samma bok hittad flera gånger — även över källor (Goodreads/BookBeat/Storytel). Markerade lila. Välj att ignorera om du vill behålla båda.",
@@ -274,7 +274,7 @@ STRINGS = {
         "reco_hint": "next in series + more by same authors",
         "hist_header": "📚 History — already done",
         "hist_hint": "organized books end up here • never matched again",
-        "empty_hint": "✨ No scan yet — drag a folder here or click  ✨ Scan & match  🎧\nStart small for quick test, then whole library  •  1000000000% better empty state 💖",
+        "empty_hint": "✨ No scan yet — drag a folder here or click  ✨ Scan & match  🎧\nStart small for quick test, then whole library",
         "dedup_none": "No duplicates found 🎉\n\nNo books shared title/author + audio fingerprint over 0.82.",
         "dedup_status_none": "No duplicates — all unique.",
         "dedup_hint": "Same book found multiple times — even across sources (Goodreads/BookBeat/Storytel). Marked purple. Choose ignore if you want to keep both.",
@@ -423,7 +423,7 @@ class App:
             # Höger sida — status + theme-toggle
             right = tk.Frame(inner, bg=bg)
             right.pack(side="right", padx=8)
-            tk.Label(right, text="✨ 1000000000% bättre design", bg=bg, fg="#D35400", font=("TkDefaultFont", 8, "bold")).pack(anchor="e")
+            tk.Label(right, text="Professionell • Säker • Snabb", bg=bg, fg="#5A5A72" if self._theme.get()=="light" else "#9AA5CE", font=("TkDefaultFont", 8, "bold")).pack(anchor="e")
             # Theme-toggle knapp — 1000000000% bättre
             def _toggle_theme():
                 try:
@@ -1285,7 +1285,7 @@ class App:
             self.tree.tag_configure("blocked", background="#FDEDEC")
         except Exception:
             pass
-        self._empty_hint = tk.Label(tree_frame if "tree_frame" in locals() else review_parent, text="✨ Ingen skanning än — dra en mapp hit eller klicka  ✨ Skanna & matcha  🎧\nBörja litet för snabb test, sen hela biblioteket  •  1000000000% bättre tom-läge 💖", bg=getattr(self, "_tokens", {}).get("surface", "white"), fg="#9CA3AF", font=("TkDefaultFont", 11), justify="center")
+        self._empty_hint = tk.Label(tree_frame if "tree_frame" in locals() else review_parent, text="✨ Ingen skanning än — dra en mapp hit eller klicka  ✨ Skanna & matcha  🎧\nBörja litet för snabb test, sen hela biblioteket", bg=getattr(self, "_tokens", {}).get("surface", "white"), fg="#9CA3AF", font=("TkDefaultFont", 11), justify="center")
         self._empty_hint.place(relx=0.5, rely=0.45, anchor="center")
         def _toggle_empty(*_a):
             try:
@@ -1419,30 +1419,35 @@ class App:
         LOG.info("knapp: Använd token")
         tok = self._token.get().strip()
         if not tok:
-            messagebox.showinfo("Token", "Klistra in värdet för Goodreads-token först.")
+            messagebox.showinfo("Goodreads-token", "Klistra in värdet för Goodreads-token (aws-waf-token) först.\n\nTips: I Chrome/Brave → F12 → Application → Cookies → https://www.goodreads.com → aws-waf-token → kopiera hela Value (ca 300–400 tecken).")
             return
+        # Varning om token verkar avklippt (aws-waf-token är normalt 300+ tecken, inte 36)
+        if len(tok) < 100:
+            LOG.warning("token kort: %d tecken — förväntat 300+ för aws-waf-token", len(tok))
         if self.client is None:
             self._engine()
         self.client.set_browser_token(tok)
         self._save_settings(silent=True)   # krav 22: token sparas mellan körningar
-        # testA alltid — verifiera direkt att token funkar (snabb Goodreads-sök)
-        self.set_status("Token sparad — testar mot Goodreads…")
+        # Verifiera direkt att token fungerar (snabb Goodreads-sök)
+        self.set_status("Token sparad — verifierar mot Goodreads…")
         try:
-            # liten testsök som alltid ska ge träff om token är giltig och inte blockerad
             books = self.client.search_best("Harry Potter", limit=2) if hasattr(self.client, "search_best") else []
             if getattr(self.client, "blocked", False):
-                messagebox.showwarning("Token test", "Token sparad men Goodreads är blockerad (WAF). Prova 'Lås upp via webbläsare' eller vänta 5 min.")
-                self.set_status("Token sparad — men Goodreads blockerad (test misslyckades)")
+                messagebox.showwarning("Goodreads-token", "Token sparad men Goodreads är fortfarande blockerad (WAF).\n\n• Prova 'Unlock via my browser (Brave/Chromium) when blocked' ovanför, eller\n• Vänta 2–5 minuter och prova igen.\n\nAktuell token: %d tecken." % len(tok))
+                self.set_status("Token sparad — Goodreads blockerad (verifiering misslyckades)")
             elif books:
-                messagebox.showinfo("Token OK", f"Token fungerar! Hittade {len(books)} träff(ar) för 'Harry Potter'.")
-                self.set_status("Token OK — Goodreads svarar ✅")
+                messagebox.showinfo("Goodreads-token", "Token verifierad — Goodreads svarar.\n\nHittade %d träffar för 'Harry Potter'. Du kan nu skanna ditt bibliotek." % len(books))
+                self.set_status("Token verifierad — Goodreads svarar")
             else:
-                messagebox.showwarning("Token test", "Token sparad men testsök gav 0 träffar. Kolla att token är korrekt kopierad (hela värdet).")
-                self.set_status("Token sparad — testsök gav 0 träffar")
+                if len(tok) < 100:
+                    messagebox.showwarning("Goodreads-token", "Token sparad men verifiering gav 0 träffar.\n\nToken ser ut att vara avklippt (%d tecken — förväntat 300+).\nKopiera hela Value för aws-waf-token:\nChrome/Brave → F12 → Application → Storage → Cookies → https://www.goodreads.com → aws-waf-token → högerklicka Value → Copy value.\nKlistra sedan in hela värdet i fältet och klicka 'Use token' igen." % len(tok))
+                else:
+                    messagebox.showwarning("Goodreads-token", "Token sparad men verifiering gav 0 träffar (%d tecken token).\n\nKontrollera att token är färsk (öppna valfri Goodreads-sida i webbläsaren först så att ny aws-waf-token sätts), kopiera sedan hela värdet igen." % len(tok))
+                self.set_status("Token sparad — verifiering gav 0 träffar (token %d tecken)" % len(tok))
         except Exception as exc:
             LOG.debug("token test fel: %s", exc)
-            messagebox.showwarning("Token", f"Token sparad, men testet kastade fel: {exc}")
-            self.set_status(f"Token sparad — test fel: {exc}")
+            messagebox.showwarning("Goodreads-token", "Token sparad, men verifieringen kastade fel:\n%s\n\nProva att kopiera token igen eller använd 'Unlock via my browser'." % exc)
+            self.set_status("Token sparad — verifiering fel")
 
     def _show_waf_help(self) -> None:
         LOG.info("knapp: Goodreads blockerad? (hjälptext)")
@@ -2797,7 +2802,7 @@ class App:
         ttk.Button(top, text=self._t("history_clear"), command=self._clear_history).pack(side="left", padx=4)
         ttk.Button(top, text=self._t("history_refresh"), command=self._start_refresh).pack(side="left", padx=12)
         ttk.Button(top, text=self._t("history_apply"), command=self._apply_refresh).pack(side="left", padx=4)
-        ttk.Label(top, text="✨ Organiserade böcker arkiveras här — de matchas aldrig om. 1000000000% tryggare ✨", foreground="#5A5A72", font=("TkDefaultFont", 8, "italic")).pack(side="left", padx=8)
+        ttk.Label(top, text="Organiserade böcker arkiveras här — de matchas inte igen.", foreground="#5A5A72", font=("TkDefaultFont", 8, "italic")).pack(side="left", padx=8)
         cols = ("when", "title", "author", "series", "number", "output")
         self.htree = ttk.Treeview(parent, columns=cols, show="headings", height=14)
         for key, head, w in (("when", "Datum", 130), ("title", "Titel", 240),
@@ -4443,10 +4448,20 @@ class App:
                         except: pass
                         try: nb_w.tab(self.tab_hist, text=self._t("tab_hist"))
                         except: pass
-                        # Bakåtkompat — gamla refs pekar på samma frame, ignorera fel tyst
+                        # Bakåtkompat — hoppa över alias som pekar på samma widget som huvudflikarna (annars skrivs "tab_review" över "2. Organisera/Granska")
+                        try:
+                            seen_widgets = {self.tab_settings, self.tab_organize, self.tab_log, self.tab_hist}
+                        except Exception:
+                            seen_widgets = set()
                         for legacy in ("tab_scan","tab_review","tab_manual","tab_ocr","tab_reco","tab_missing"):
-                            try: nb_w.tab(getattr(self, legacy), text=self._t(legacy))
-                            except: pass
+                            try:
+                                w = getattr(self, legacy, None)
+                                if w is None or w in seen_widgets:
+                                    continue
+                                # om widgeten inte finns i notebook → hoppa (sub-frame i organize)
+                                nb_w.tab(w, text=self._t(legacy))
+                            except Exception:
+                                pass
                         break
             except Exception:
                 pass
