@@ -1109,19 +1109,54 @@ class Engine:
         return proposal, matches
 
     def from_goodreads_url(self, url: str, audio: Optional[AudioFile] = None) -> tuple[Proposal, list]:
-        """Använd en Goodreads-länk direkt (100 % rätt bok, ingen gissning)."""
+        """Använd en Goodreads-länk direkt (100 % rätt bok, ingen gissning).
+
+        Fungerar även när sökindex är blockerat — boksidan hämtas direkt.
+        Om WAF blockerar provas automatisk upplåsning via Brave (upp till 3 försök)
+        precis som vid sökning.
+        """
         from .openlibrary import clean_query
 
         audio = audio or AudioFile(path=url, album=url, title=url)
         proposal = Proposal(audio=audio)
         proposal.paths = []  # type: ignore[attr-defined]
         proposal.group_size = 1  # type: ignore[attr-defined]
+        # Normalisera länk: Goodreads accepterar ?ac=1 etc men vi vill cacha utan query-brus
+        # (client.book hanterar query ändå, men vi loggar ren url)
         try:
             book = self.client.book(url)
         except GoodreadsBlocked as exc:
-            proposal.status = "blockerad"
-            proposal.note = str(exc)
-            return proposal, []
+            # Försök låsa upp via webbläsare om aktiverat — samma logik som resolve()
+            if self.options.auto_token and self.token_fetcher and getattr(self, "_unlock_tries", 0) < 3:
+                self._unlock_tries = getattr(self, "_unlock_tries", 0) + 1
+                self._unlocked = True
+                self.on_status(f"Goodreads blockerad — låser upp via din webbläsare … (försök {self._unlock_tries}/3)")
+                try:
+                    token = self.token_fetcher()
+                    if token:
+                        self.client.set_browser_token(token)
+                        book = self.client.book(url)
+                    else:
+                        proposal.status = "blockerad"
+                        proposal.note = str(exc)
+                        return proposal, []
+                except GoodreadsBlocked as exc2:
+                    proposal.status = "blockerad"
+                    proposal.note = str(exc2)
+                    return proposal, []
+                except GoodreadsError as exc2:
+                    proposal.status = "fel"
+                    proposal.note = str(exc2)
+                    return proposal, []
+                except Exception as exc2:
+                    self.on_status(f"Upplåsning misslyckades: {exc2}")
+                    proposal.status = "blockerad"
+                    proposal.note = str(exc)
+                    return proposal, []
+            else:
+                proposal.status = "blockerad"
+                proposal.note = str(exc)
+                return proposal, []
         except GoodreadsError as exc:
             proposal.status = "fel"
             proposal.note = str(exc)
