@@ -256,7 +256,7 @@ All tiers use the links above — pick any sum you want (one-time or monthly on 
 | Tier | Amount | What you get | Quick link |
 |------|--------|--------------|------------|
 | ☕ **Coffee** | `39 kr` | Thank-you in next release notes + good vibes | **[PayPal 39 kr](https://paypal.me/Rickard3dPrint/39SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
-| 📚 **Book friend** ⭐ *Most popular* | `99 kr` | Little ♥ in the app + your ideas prioritized | **[PayPal 99 kr](https://paypal.me/Rickard3dPrint/99SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
+| 📚 **Book friend** ⭐ *Most popular* | `99 kr` | ♥ Heart in next release notes + your ideas prioritized | **[PayPal 99 kr](https://paypal.me/Rickard3dPrint/99SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
 | 🌟 **Hero** | `299 kr` | Name in README (if you want) + wishlist priority + eternal gratitude | **[PayPal 299 kr](https://paypal.me/Rickard3dPrint/299SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
 
 > **Any amount counts** — 20 kr or 500 kr, one-time or monthly. Every krona keeps the 19999% matching alive.
