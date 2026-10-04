@@ -245,7 +245,7 @@ Menu **`Remember`** lists last import/output folders + `Save settings now`. `Hel
 
 - **55% Development** — better matching, series logic, Goodreads fixes, ABS finesse
 - **25% Ops & test** — domain, build, test audiobooks to ship without bugs
-- **20% Coffee & time** — evenings & weekends in Kumla — your coffee keeps the keyboard warm
+- **20% Coffee & time** — your coffee keeps the keyboard warm
 
 > No tracking. No account in the app. Receipt comes directly from PayPal/Ko-fi. Want your name in the README? Add it to the message. Want to stay anonymous? Leave it empty. Want Swish? Tell me the number/QR and I’ll add a `swish://` button.
 
