@@ -1,0 +1,928 @@
+"""Orkestrering: skanna -> matcha mot Goodreads -> föreslå taggar -> skriv."""
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from typing import Callable, Optional
+
+from . import library, matching, organize, tags
+from .goodreads import Goodreads, GoodreadsBlocked, GoodreadsError
+from .history import History, identity_key
+from .logging_setup import get
+
+log = get("engine")
+from .models import AudioFile, Proposal
+from .text import (
+    DISC_RE,
+    clean_series,
+    clean_title_from_hint,
+    extract_part,
+    extract_series_hint,
+    looks_like_junk_title,
+    norm,
+    parse_series_hint,
+    split_series,
+    strip_part_words,
+    title_key,
+    title_similarity,
+)
+
+
+@dataclass
+class EngineOptions:
+    write_series: bool = True      # skriv TXXX:SERIES / ----:iTunes:SERIES
+    album_style: str = "title"     # "title" | "series"  ("Harry Potter" som album)
+    backup: bool = True
+    min_score: float = matching.MEDIUM
+    include_year: bool = True
+    max_candidates: int = 6
+    use_fallback: bool = True      # Open Library när Goodreads är blockerat/tomt
+    use_title_bridge: bool = True  # gissa engelsk originaltitel för svenska titlar
+    auto_token: bool = False       # lås upp WAF via Brave/Chromium vid blockering
+    skip_done: bool = True         # hoppa över böcker som historiken säger är klara
+    replaygain: bool = True        # 1) ReplayGain / volymnormalisering — skriv REPLAYGAIN_* om ffmpeg finns
+
+
+def _clean_ranked(matches: list, prefer_title: str = "") -> list:
+    """Poäng>0.15; föredra (1) exakt titelutgåva, (2) ren utgåva, annars som det är."""
+    from .text import title_key
+
+    matches = [m for m in matches if m.score > 0.15]
+    if not matches:
+        return matches
+    want = title_key(prefer_title)
+    if want:
+        exact = [m for m in matches if title_key(m.book.title) == want]
+        if exact:
+            # samma titel i flera utgåvor: föredra den med seriedata, sedan flest ratings
+            exact.sort(key=lambda m: (0 if (m.book.series or m.book.series_number) else 1,
+                                      -_ratings(m.book), -m.score))
+            rest = [m for m in matches if m not in exact]
+            return exact + rest
+    clean = [m for m in matches if not looks_like_junk_title(m.book.title)]
+    return clean or matches
+
+
+def _ratings(book) -> int:
+    rc = (book.ratings_count or "").replace(",", "").replace(".", "")
+    return int(rc) if rc.isdigit() else 0
+
+
+# Krav 23: flera versioner av samma bok -> behåll den bästa.
+# Kvalitet = total filstorlek (proxy för bitrate), därefter format
+# (m4b/m4a före mp3 — en fil, kapitel), därefter färst antal filer.
+_FORMAT_RANK = {"flac": 3, "m4b": 2, "m4a": 2, "mp3": 1}
+
+
+def _version_quality(p: "Proposal") -> tuple:
+    size = getattr(p, "total_size_mb", None)
+    if size is None:
+        size = p.audio.size_mb or 0.0
+    fmt = _FORMAT_RANK.get((p.audio.format or "").lower(), 0)
+    n_files = len(getattr(p, "paths", None) or [p.audio.path])
+    return (round(size, 1), fmt, -n_files)
+
+
+def choose_best_versions(proposals: list["Proposal"]) -> list["Proposal"]:
+    """Fler versioner av samma bok i samma skanning -> välj den bästa.
+
+    Jämför matchade förslag med samma identitet (Goodreads-id, annars
+    titel+författare). Vinnaren behåller sin status; förlorarna markeras
+    'sämre version' + skipped så att de inte organiseras. Returnerar
+    listan över ändrade förslag.
+    """
+    from .text import norm, title_key
+
+    by_key: dict[str, list] = {}
+    for p in proposals:
+        if p.skipped or p.status not in ("matchad", "behöver koll") or not p.match:
+            continue
+        bid = p.match.book.book_id if p.match.book else ""
+        key = (f"id:{bid}" if bid else
+               "ta:" + title_key(p.new_title or p.audio.title)
+               + "|" + norm(p.new_artist or p.audio.artist))
+        by_key.setdefault(key, []).append(p)
+
+    changed: list = []
+    for group in by_key.values():
+        if len(group) < 2:
+            continue
+        group.sort(key=_version_quality, reverse=True)
+        best = group[0]
+        for worse in group[1:]:
+            worse.status = "sämre version"
+            worse.skipped = True
+            b_size = getattr(best, "total_size_mb", best.audio.size_mb or 0.0)
+            w_size = getattr(worse, "total_size_mb", worse.audio.size_mb or 0.0)
+            worse.note = (f"bättre version vald: {best.audio.group_label or best.audio.path} "
+                          f"({b_size:.0f} MB mot {w_size:.0f} MB)")
+            log.info("flera versioner av %r — behåller %r, hoppar över %r",
+                     worse.new_title or worse.audio.title,
+                     best.audio.group_label, worse.audio.group_label)
+            changed.append(worse)
+    return changed
+
+
+class Engine:
+    """Kopplar ihop biblioteksskanning, Goodreads och taggskrivning."""
+
+    def __init__(self, client: Goodreads, options: Optional[EngineOptions] = None,
+                 on_status: Optional[Callable[[str], None]] = None,
+                 fallback=None, bridge=None,
+                 token_fetcher: Optional[Callable[[], str]] = None,
+                 history: Optional[History] = None,
+                 on_history_hit: Optional[Callable[["Proposal", dict], bool]] = None) -> None:
+        self.client = client
+        self.options = options or EngineOptions()
+        self.on_status = on_status or (lambda s: None)
+        self.fallback = fallback    # openlibrary.OpenLibrary
+        self.bridge = bridge        # bridge.TitleBridge
+        self.token_fetcher = token_fetcher  # t.ex. browser_token.fetch_waf_token
+        self.history = history or History()
+        # Krav 21: fråga användaren vid historikträff. True = hoppa över,
+        # False = matcha på nytt. None = hoppa över utan att fråga.
+        self.on_history_hit = on_history_hit
+        self._unlocked = False
+
+    # ---------------------------------------------------------------- källor
+    def resolve(self, title: str, author: str, part: str = "") -> tuple[list, str, str]:
+        """Hämta kandidater. Returnerar (böcker, källa, notering).
+
+        Kedja:
+          1. Goodreads med renad sökfråga (titel utan serieparentes + giltig författare)
+          2. Goodreads med engelsk originaltitel (via Wikipedia) om steg 1 gav tomt
+          3. Open Library (fungerar utan nyckel, även för svenska titlar)
+        """
+        from .openlibrary import clean_query
+
+        q = clean_query(title, author)
+        note = ""
+        if q != title.strip():
+            note = f"sökfråga rensad till '{q}'"
+
+        books: list = []
+        source = "goodreads"
+        from . import logging_setup as _ls
+        _log = _ls.get("engine.match")
+        if not getattr(self.client, "blocked", False):
+            try:
+                books = self.client.search_best(q, limit=self.options.max_candidates)
+                # Goodreads eget sök träffar ofta fel utgåva på långa titlar:
+                # komplettera med en kort fråga (första orden + författare).
+                seen = {b.book_id for b in books}
+
+                def merge(extra_books) -> None:
+                    for b in extra_books:
+                        if b.book_id and b.book_id not in seen:
+                            books.append(b)
+                            seen.add(b.book_id)
+
+                short = self._short_query(title, author)
+                if short and short != q:
+                    merge(self.client.search_best(short, limit=4))
+                if part:
+                    base = " ".join(split_series(title)[0].split()[:2])
+                    part_q = f"{base} {part}"
+                    if part_q not in (q, short):
+                        merge(self.client.search_best(part_q, limit=4))
+            except GoodreadsBlocked as exc:
+                _log.warning("goodreads blockerad för %r: %s", q, exc)
+                if self.options.auto_token and self.token_fetcher and not self._unlocked:
+                    self._unlocked = True
+                    self.on_status("Goodreads blockerad — låser upp via din webbläsare …")
+                    try:
+                        token = self.token_fetcher()
+                        if token:
+                            self.client.set_browser_token(token)
+                            books = self.client.search_best(q, limit=self.options.max_candidates)
+                            if books:
+                                note = (note + " | " if note else "") + "upplåst via webbläsar-token"
+                    except (GoodreadsBlocked, GoodreadsError):
+                        books = []
+                    except Exception as exc2:  # noqa: BLE001
+                        self.on_status(f"Upplåsning misslyckades: {exc2}")
+                if not books:
+                    note = (note + " | " if note else "") + "Goodreads blockerad (AWS WAF)"
+                    self.on_status(note)
+            except GoodreadsError as exc:
+                _log.warning("goodreads-fel för %r: %s", q, exc)
+                note = (note + " | " if note else "") + f"Goodreads-fel: {exc}"
+
+        # Goodreads index är i praktiken engelskt: svenska titlar (även sådana
+        # utan å/ä/ö, t.ex. "Isprinsessan") ger ofta noll träffar.
+        base_title = split_series(title)[0]
+        needs_bridge = (
+            not books
+            and self.options.use_title_bridge
+            and self.bridge is not None
+            and not getattr(self.client, "blocked", False)
+            and len(base_title) >= 3
+        )
+        if needs_bridge:
+            _log.info("goodreads gav 0 träffar för %r — provar originaltitlar via Wikipedia", q)
+            for cand in (self.bridge.lookup(split_series(title)[0]) or [])[:2]:
+                _log.info("originaltitel-kandidat: %r", cand)
+                self.on_status(f"Provar originaltitel: {cand}")
+                try:
+                    books = self.client.search_best(clean_query(cand, author), limit=self.options.max_candidates)
+                except (GoodreadsBlocked, GoodreadsError):
+                    books = []
+                if books:
+                    note = (note + " | " if note else "") + f"matchad via originaltiteln '{cand}'"
+                    break
+
+        if not books and self.options.use_fallback and self.fallback is not None:
+            _log.info("inga träffar för %r från goodreads/bridge — provar reservkällor", q)
+            self.on_status("Provar reservkällor (Storytel/BookBeat/Open Library) …")
+            books = self.fallback.search(q, limit=self.options.max_candidates)
+            if books:
+                src = getattr(books[0], "source", "") or ""
+                source = src if src and src != "goodreads" else "openlibrary"
+                _log.info("reservkälla gav %d träffar för %r (källa=%s)", len(books), q, source)
+                pretty = {"openlibrary": "Open Library", "storytel": "Storytel",
+                          "bookbeat": "BookBeat"}.get(source, source)
+                note = (note + " | " if note else "") + f"träffar från {pretty} (Goodreads ej tillgänglig)"
+        return books, source, note
+
+    @staticmethod
+    def _short_query(title: str, author: str) -> str:
+        """'Harry Potter and the Philosopher's Stone' -> 'Harry Potter' (+ författare)."""
+        small = {"om", "och", "i", "av", "the", "of", "and", "en", "ett", "den", "det"}
+        words = split_series(title or "")[0].split()
+        if len(words) <= 3:
+            return ""
+        keep = words[:3]
+        while keep and keep[-1].lower() in small:
+            keep.pop()
+        if len(keep) < 2:
+            return ""
+        short = " ".join(keep)
+        if author:
+            short = f"{short} {author}"
+        return short
+
+    # ---------------------------------------------------------------- skanna
+    def scan(self, root: str, recursive: bool = True) -> list[AudioFile]:
+        self.on_status(f"Skannar {root} …")
+        return library.scan(root, recursive=recursive)
+
+    def groups(self, files: list[AudioFile]) -> list[list[AudioFile]]:
+        return library.group_files(files)
+
+    # ---------------------------------------------------------------- matcha
+    def match_group(self, group: list[AudioFile]) -> tuple[Proposal, list]:
+        """Matcha en grupp (en eller flera filer för samma bok) mot Goodreads."""
+        rep = group[0]
+        audio = AudioFile(
+            path=rep.path,
+            album=rep.album or rep.title or os.path.splitext(os.path.basename(rep.path))[0],
+            title=rep.title or rep.album,
+            artist=rep.artist or matching.guess_author_from_path(rep.path),
+            year=rep.year,
+            format=rep.format,
+            group_label=library.label_group(group),
+        )
+        proposal = Proposal(audio=audio)
+        proposal.paths = [f.path for f in group]  # type: ignore[attr-defined]
+        proposal.group_size = len(group)          # type: ignore[attr-defined]
+        proposal.total_size_mb = round(sum(f.size_mb or 0.0 for f in group), 1)  # type: ignore[attr-defined]
+        # 50000000%: serie/del från filnamn/mapp ("Welcome … – Book 5", "Fjällbacka 01 - Isprinsessan"
+        # "Harry Potter #1 - Philosopher's Stone") - fungerar helt offline.
+        hint_series, hint_part = matching.hints_for(audio)
+        # part för sökning: primärt hint_part, annars lösa "Del 3" i taggar/path
+        part = hint_part or extract_part(audio.album) or extract_part(rep.path)
+
+        # Sökfråga: välj den mest boklika källan (titel -> filnamn -> album -> serie).
+        # Serie-prefix rensat: "Fjällbacka 01 - Isprinsessan" -> "Isprinsessan"
+        fname = os.path.splitext(os.path.basename(rep.path))[0]
+        fname = re.sub(r"\s*[-_.]?\s*\d{1,3}\s*$", "", fname)
+        # mappnamnet är ofta bokliast ("The Green Mile (Disc 01)") när taggar
+        # är rip-skrot ("Track 01")
+        folder_title = DISC_RE.sub(
+            " ", os.path.basename(os.path.dirname(rep.path)) or "").strip()
+        # rena titlar utan serieprefix har högsta prio — men serie-tolkad
+        # titelrest och serie+nummer går före "Chapter 01"-skrot.
+        clean_title = clean_title_from_hint(audio.title) or clean_title_from_hint(audio.album)
+        clean_fname = clean_title_from_hint(fname)
+        clean_folder = clean_title_from_hint(folder_title)
+        # hint_rest direkt från parsern (om serie-mönstret bar på titelrest)
+        _hs, _hp, _hr = extract_series_hint(audio.title, audio.album, fname, folder_title)
+        # interna hjälpen: undvik att skicka "Chapter 01" som boktitel
+        def _is_chapter_junk(t: str) -> bool:
+            low = (t or "").lower()
+            return "chapter" in low or "kapitel" in low
+        q_candidates = [
+            _hr if _hr and not _is_chapter_junk(_hr) else "",
+            hint_series and f"{hint_series} {hint_part}" if hint_series and hint_part else "",
+            clean_folder if clean_folder and not _is_chapter_junk(clean_folder) else "",
+            clean_title if clean_title and not _is_chapter_junk(clean_title) else "",
+            clean_fname if clean_fname and not _is_chapter_junk(clean_fname) else "",
+            strip_part_words(audio.title) if not _is_chapter_junk(audio.title) else "",
+            strip_part_words(audio.album) if not _is_chapter_junk(audio.album) else "",
+            folder_title if not _is_chapter_junk(folder_title) else "",
+            fname if not _is_chapter_junk(fname) else "",
+            split_series(audio.album)[0] if not _is_chapter_junk(split_series(audio.album)[0]) else "",
+            library.read_tags(rep.path).get("series", ""),
+        ]
+        # platta ut och filtrera — 100000% : behåll ordning men filtrera junk hårt
+        flat: list[str] = []
+        seen = set()
+        for c in q_candidates:
+            if c and isinstance(c, str) and c.strip():
+                cc = c.strip()
+                # rensa skräp som "Unknown Album (4/...)" -> ta bort parentes-suffix
+                cc = cc.split(" (")[0].strip()
+                if not looks_like_junk_title(cc) and cc.lower() not in ("unknown album", "unknown"):
+                    low = cc.lower()
+                    if low not in seen:
+                        flat.append(cc)
+                        seen.add(low)
+        # 100000%: prova flera frågor i prioritetsordning tills något hittar
+        # (tidigare togs bara första; nu testas upp till 5 kandidater mot Goodreads/fallback)
+        query = next((c for c in flat if not looks_like_junk_title(c)),
+                     strip_part_words(audio.album) or strip_part_words(audio.title) or fname)
+        # spara alla kandidater för fallback-loop
+        query_candidates = flat if flat else [query]
+
+        # Krav 21: redan organiserad bok -> arkiverad i historiken, ingen sökning.
+        rematch = False   # True om användaren svarat "matcha på nytt" på frågan
+        if self.options.skip_done:
+            cur = library.read_tags(rep.path)
+            ent = self.history.find_match(audio.title or audio.album,
+                                          audio.artist,
+                                          cur.get("series", ""),
+                                          cur.get("series_number", ""))
+            if ent:
+                proposal.status = "klar (historik)"
+                proposal.skipped = True
+                proposal.source = "historik"
+                proposal.new_title = ent.get("title") or audio.title
+                proposal.new_artist = ent.get("author") or audio.artist
+                proposal.new_series = ent.get("series") or ""
+                proposal.new_series_number = ent.get("number") or ""
+                proposal.note = "tidigare importerad — hoppas över (matchas inte på nytt)"
+                if self.on_history_hit is None or self.on_history_hit(proposal, ent):
+                    log.info("matchning %r -> klar (historik) via %s, ingen sökning görs",
+                             audio.group_label, ent.get("key", "?")[:12])
+                    return proposal, []
+                # användaren vill matcha på nytt -> nollställ och sök som vanligt
+                rematch = True
+                proposal.status, proposal.skipped, proposal.source = "ej matchad", False, ""
+                proposal.note = ""
+                log.info("matchning %r -> användaren vill matcha på nytt trots historikträff",
+                         audio.group_label)
+
+        # 100000%: prova query_candidates i turordning (max 5) tills träff
+        books: list = []
+        source = ""
+        note = ""
+        tried = []
+        for q in query_candidates[:5]:
+            if q in tried:
+                continue
+            tried.append(q)
+            self.on_status(f"Söker: {q}")
+            books, source, note = self.resolve(q, audio.artist, part=part)
+            if books:
+                query = q
+                break
+            # även vid blockerad, prova nästa kandidat om fallback kan hitta
+            if getattr(self.client, "blocked", False) and source.startswith("fallback"):
+                # fallback gav tomt — prova nästa
+                continue
+        if not books:
+            # ingen kandidat gav träff — behåll sista försökets note/source
+            pass
+        proposal.source = source
+        if note:
+            proposal.note = note
+        if not books:
+            proposal.status = "blockerad" if getattr(self.client, "blocked", False) else "ej matchad"
+            if not note:
+                proposal.note = "Inga träffar (varken Goodreads eller reservkälla)"
+            log.warning("matchning %r -> %s. Orsak: %s",
+                        audio.group_label, proposal.status, proposal.note)
+            return proposal, []
+
+        # 100000%: föredra titeln som faktiskt gav träff (query) vid rankning, inte alltid audio.title
+        prefer = query if 'query' in locals() and query else (audio.title or audio.album)
+        matches = _clean_ranked(matching.rank(books, audio), prefer)
+        if not matches:
+            proposal.status = "ej matchad"
+            proposal.note = "Inga Goodreads-träffar"
+            return proposal, []
+
+        best = matches[0]
+        proposal.match = best
+        proposal.candidates = matches  # type: ignore[attr-defined]
+        self._fill(proposal, best, group, part)
+        proposal.status = matching.status_for(best.score)
+        # fel författare får aldrig bli "matchad" (t.ex. "Insomnia" av King
+        # vs J.R. Johansson) — titeln lik men artist-taggen säger emot
+        if (proposal.status == "matchad" and best.author_score < 0.25
+                and audio.artist):
+            proposal.status = "behöver koll"
+            proposal.note = (proposal.note + " | " if proposal.note else "") + \
+                "författaren stämmer inte med filens artist-tagg — kontrollera"
+        log.info("match %r -> %r (%.2f, %s%s)", audio.group_label,
+                 best.book.display, best.score, proposal.status,
+                 f", minus {best.penalty:.2f}" if getattr(best, "penalty", 0) > 0 else "")
+        if self.options.skip_done and not rematch and self.history.is_done(proposal.identity()):
+            proposal.status = "klar (historik)"
+            proposal.skipped = True
+            log.info("hoppar över %r — redan färdigbehandlad", audio.group_label)
+        if matching.needs_manual(matches):
+            proposal.status = "behöver koll"
+            extra = f"Två nära träffar ({best.score:.2f} vs {matches[1].score:.2f})"
+            proposal.note = f"{proposal.note} | {extra}" if proposal.note else extra
+        log.info("matchning %r -> %s (källa=%s, poäng=%s) %s",
+                 audio.group_label, proposal.status, proposal.source,
+                 f"{best.score:.2f}", proposal.note or "")
+        return proposal, matches
+
+    def _fill(self, proposal: Proposal, match, group: list[AudioFile], part: str) -> None:
+        book = match.book
+        # skräputgåvor ("… [Imported] [Paperback] …") får låna titeltext av en ren utgåva
+        title = book.title
+        if looks_like_junk_title(title):
+            for m in getattr(proposal, "candidates", None) or []:
+                alt = m.book.title
+                if not looks_like_junk_title(alt) and title_similarity(alt, title) >= 0.7:
+                    title = alt
+                    break
+        proposal.new_title = title
+        proposal.new_artist = ", ".join(book.authors) or proposal.audio.artist
+        series = clean_series(book.series)
+        number = book.series_number or part
+        # 50000000% ABS: om Goodreads saknar serie men filen tydligt säger serie
+        # ("Fjällbacka 01 - Isprinsessan"), använd hint — annars hamnar boken
+        # fel i ABS (utan serie-mapp och utan serie-tagg).
+        if not series:
+            try:
+                hs, hp = matching.hints_for(proposal.audio)
+                if hs and hs.strip():
+                    series = clean_series(hs)
+                    if not number and hp:
+                        number = hp
+            except Exception:
+                pass
+        proposal.new_series = series
+        proposal.new_series_number = number
+        proposal.new_year = book.year if self.options.include_year else ""
+        if proposal.source.startswith("goodreads"):
+            try:
+                self.client.enrich(book)
+            except Exception:  # noqa: BLE001 - metadata är aldrig kritiskt
+                pass
+        proposal.new_subtitle = book.subtitle or ""
+        proposal.new_description = (book.description or "").strip()
+        proposal.new_narrator = ", ".join(book.narrators) if book.narrators else ""
+        proposal.new_publisher = book.publisher or ""
+        proposal.new_genre = ", ".join(book.genres[:3]) if book.genres else ""
+        proposal.new_isbn = book.isbn or ""
+        proposal.new_asin = book.asin or ""
+        proposal.new_language = book.language or ""
+
+        if self.options.album_style == "series" and series:
+            album = f"{series}, #{number}" if number else series
+        else:
+            album = book.title
+            if series and number:
+                album = f"{series}, #{number}"
+            elif series:
+                album = series
+        proposal.new_album = album
+
+        if len(group) > 1:
+            total = len(group)
+            proposal.new_track = ""
+        else:
+            proposal.new_track = ""
+        # spårnummer per fil skrivs i apply()
+
+    # ---------------------------------------------------------------- skriv
+    def build_file_fields(self, proposal: Proposal, index: int, total: int, path: str | None = None) -> dict:
+        """Fält för en enskild fil i gruppen (spårnummer n/total)."""
+        fields = tags.proposal_to_fields(proposal, write_series=self.options.write_series)
+        if total > 1:
+            fields["track"] = f"{index + 1}/{total}"
+        elif proposal.audio.track:
+            fields["track"] = proposal.audio.track
+        else:
+            fields.pop("track", None)
+        # 1) ReplayGain — beräkna per fil om aktiverat och ffmpeg finns
+        if getattr(self.options, "replaygain", False) and path:
+            try:
+                from . import audioinfo as _ai
+                gain, peak = _ai.replaygain(path)
+                if gain:
+                    fields["replaygain_track_gain"] = gain
+                if peak:
+                    fields["replaygain_track_peak"] = peak
+            except Exception:
+                pass
+        return fields
+
+    def apply(self, proposal: Proposal, dry_run: bool = False) -> list[tags.WriteResult]:
+        paths = getattr(proposal, "paths", None) or [proposal.audio.path]
+        total = len(paths)
+        results: list[tags.WriteResult] = []
+        for i, path in enumerate(paths):
+            fields = self.build_file_fields(proposal, i, total, path=path)
+            if dry_run:
+                results.append(tags.WriteResult(path, True, sorted(fields)))
+                continue
+            res = tags.write_file(path, fields, backup=self.options.backup)
+            results.append(res)
+        proposal.applied = all(r.ok for r in results) and bool(results)
+        return results
+
+    # ---------------------------------------------------------------- organisera
+    def organize(self, proposal: Proposal, group: list[AudioFile], out_root: str,
+                 move: bool = False) -> organize.OrganizeResult:
+        """Kopiera/flytta + tagga + .md + historik, Audiobookshelf-struktur."""
+        # Om ReplayGain är aktiverat, beräkna per källfil och lägg på förslaget
+        # så att organize.execute kan återanvända samma fält per målfil
+        # (vi lagrar temporärt på proposal för att undvika API-bryt).
+        if getattr(self.options, "replaygain", False):
+            try:
+                from . import audioinfo as _ai
+                # beräkna per fil i gruppen och spara som dict path->(gain,peak)
+                rg_map: dict[str, tuple[str | None, str | None]] = {}
+                for af in group:
+                    rg_map[af.path] = _ai.replaygain(af.path)
+                # spara på proposal för senare användning i execute-loopen
+                proposal._rg_map = rg_map  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        res = organize.execute(proposal, group, out_root, move=move,
+                               write_series=self.options.write_series)
+        # Efter-skriv ReplayGain på målfilerna (om beräknat) — utan att störa befintligt flöde
+        if getattr(proposal, "_rg_map", None) and not res.errors:
+            try:
+                from . import tags as _tags
+                for act in res.actions:
+                    if act.kind in ("copy", "move") and act.dst:
+                        src = act.src
+                        gain_peak = getattr(proposal, "_rg_map", {}).get(src)
+                        if gain_peak and (gain_peak[0] or gain_peak[1]):
+                            rg_fields: dict = {}
+                            if gain_peak[0]:
+                                rg_fields["replaygain_track_gain"] = gain_peak[0]
+                            if gain_peak[1]:
+                                rg_fields["replaygain_track_peak"] = gain_peak[1]
+                            wr = _tags.write_file(act.dst, rg_fields, backup=False)
+                            if wr.ok:
+                                log.info("replaygain skrivet %s -> %s", act.dst, rg_fields)
+            except Exception as exc:
+                log.warning("replaygain efter-skriv misslyckades: %s", exc)
+        if res.errors:
+            for e in res.errors:
+                log.error("organize: %s", e)
+        else:
+            key = proposal.identity()
+            paths = [a.dst for a in res.actions if a.kind in ("copy", "move", "tags")]
+            self.history.add(
+                key,
+                title=proposal.new_title,
+                author=proposal.new_artist,
+                series=proposal.new_series,
+                number=proposal.new_series_number,
+                url=proposal.match.book.url if proposal.match else "",
+                score=proposal.match.score if proposal.match else 0.0,
+                source=proposal.source or "",
+                output=res.title_dir,
+                files=paths,
+            )
+            log.info("historik: %r klar -> %s", proposal.new_title, res.title_dir)
+        return res
+
+    # -------------------------------------------------------- metadata-uppdatering (krav 34)
+    def check_output_for_updates(self, out_root: str, on_proposal=None) -> list[Proposal]:
+        """Skanna redan organiserad outputmapp och jämför taggar med färsk Goodreads-data.
+
+        Returnerar förslag där minst ett fält skiljer sig (titel/författare/serie/del/år/undertext/...)
+        eller där omslag/.md saknas. Fungerar helt offline om historiken har URL, annars ny sökning.
+        """
+        import os as _os
+        files = self.scan(out_root, recursive=True)
+        if not files:
+            return []
+        groups = self.groups(files)
+        out: list[Proposal] = []
+        for group in groups:
+            rep = group[0]
+            cur = library.read_tags(rep.path)
+            # gissa titel/författare från taggar eller mapp
+            cur_title = cur.get("title") or rep.title or _os.path.splitext(_os.path.basename(rep.path))[0]
+            cur_artist = cur.get("artist") or rep.artist
+            cur_series = cur.get("series", "")
+            cur_number = cur.get("series_number", "")
+            # försök hitta historikpost via output-sökväg eller nyckel
+            hist_entry = None
+            # sök via output i historiken (exakt mapp)
+            title_dir = _os.path.dirname(group[0].path)
+            # gå uppåt tills vi hittar en historikpost som matchar output
+            for e in self.history.entries():
+                out_path = e.get("output", "")
+                if out_path and (title_dir == out_path or title_dir.startswith(out_path + _os.sep)):
+                    hist_entry = e
+                    break
+            if not hist_entry:
+                # fallback: match via titel/författare/serie
+                hist_entry = self.history.find_match(cur_title, cur_artist, cur_series, cur_number)
+            book = None
+            source = "goodreads"
+            # 1) försök via sparad Goodreads-länk (mest exakt)
+            if hist_entry and hist_entry.get("url"):
+                try:
+                    book = self.client.book(hist_entry["url"])
+                except Exception:
+                    book = None
+            # 2) annars ny sökning mot Goodreads/fallback
+            if book is None:
+                # använd hint för bättre sökning (serie-mönster)
+                hint_series, hint_part = matching.hints_for(rep)
+                # bygg audio för sökning (likt match_group men från cur-taggar)
+                audio_tmp = rep
+                # försök matcha med nuvarande titel/författare
+                q_title = cur_title
+                # om titel är skräp, använd mappnamn
+                if looks_like_junk_title(q_title):
+                    q_title = _os.path.basename(_os.path.dirname(rep.path)) or q_title
+                books, source, _note = self.resolve(q_title, cur_artist, part=hint_part or cur_number)
+                if not books:
+                    continue
+                # ranka och ta bästa
+                # skapa en tillfällig AudioFile för rankning
+                tmp_af = AudioFile(path=rep.path, title=cur_title, artist=cur_artist, album=cur.get("album",""), year=cur.get("year",""))
+                ranked = _clean_ranked(matching.rank(books, tmp_af), q_title)
+                if not ranked:
+                    continue
+                book = ranked[0].book
+            if not book:
+                continue
+            # bygg förslag med färsk data
+            audio_for_fill = AudioFile(path=rep.path, title=cur_title, artist=cur_artist, album=cur.get("album",""))
+            proposal = Proposal(audio=audio_for_fill)
+            proposal.paths = [f.path for f in group]
+            proposal.group_size = len(group)
+            proposal.total_size_mb = round(sum(f.size_mb or 0 for f in group),1)
+            # använd samma _fill-logik för att få nya fält (inkl hint-fallback)
+            # skapa en Match med book
+            from .models import Match
+            m = Match(book=book, score=1.0)
+            # låtsas att vi har kandidater för junk-hantering
+            proposal.candidates = [m]
+            # part från hint eller befintlig
+            hint_series2, hint_part2 = matching.hints_for(rep)
+            part_for_fill = hint_part2 or cur_number
+            self._fill(proposal, m, group, part_for_fill)
+            proposal.source = source
+            # beräkna diff mot nuvarande taggar
+            new_fields = tags.proposal_to_fields(proposal, write_series=self.options.write_series)
+            # även år etc: proposal_to_fields inkluderar redan
+            cur_fields = {k: v for k,v in cur.items() if k in new_fields}
+            # jämför varje fält som skulle skrivas
+            diffs = []
+            for k, new_val in new_fields.items():
+                cur_val = cur.get(k, "")
+                # normalisera för jämförelse (strip)
+                if (new_val or "").strip() != (cur_val or "").strip():
+                    diffs.append((k, cur_val, new_val))
+            # även kolla omslag
+            title_dir = _os.path.dirname(group[0].path)
+            cover_path = _os.path.join(title_dir, "cover.jpg")
+            md_path = _os.path.join(title_dir, f"{proposal.new_title or cur_title}.md")
+            # md jämförs inte hårt — om titel/serie ändrats bör md uppdateras
+            needs_cover = bool(book.cover and not _os.path.exists(cover_path))
+            needs_md = bool(diffs)  # om något fält ändras bör md också skrivas om
+            if diffs or needs_cover or needs_md:
+                proposal.status = "behöver uppdateras"
+                # bygg läsbar note
+                if diffs:
+                    proposal.note = "Ändringar: " + ", ".join(f"{k}: '{old}' → '{new}'" for k,old,new in diffs[:4])
+                    if len(diffs) > 4:
+                        proposal.note += f" (+{len(diffs)-4} till)"
+                elif needs_cover:
+                    proposal.note = "Omslag saknas — kommer att hämtas"
+                else:
+                    proposal.note = "Metadata skiljer sig"
+                proposal._diffs = diffs  # type: ignore
+                proposal._needs_cover = needs_cover  # type: ignore
+                proposal._needs_md = needs_md  # type: ignore
+            else:
+                proposal.status = "aktuell"
+                proposal.note = "Inga ändringar"
+            proposal.match = m
+            # spara diff för apply
+            if on_proposal:
+                on_proposal(proposal)
+            out.append(proposal)
+        return out
+
+    def apply_update(self, proposal: Proposal, group: list[AudioFile]) -> list:
+        """Skriv uppdaterad metadata direkt i outputmappen (ingen flytt, bara taggar+md+cover)."""
+        import os as _os
+        from . import audioinfo
+        results = []
+        fields = tags.proposal_to_fields(proposal, write_series=self.options.write_series)
+        total = len(group)
+        # sortera filer som vid organisering
+        ordered = organize.order_files(group)
+        for i, af in enumerate(ordered, 1):
+            f = {**fields}
+            if total > 1:
+                f["track"] = f"{i}/{total}"
+            elif af.track:
+                f["track"] = af.track
+            # 1) ReplayGain per fil vid uppdatering
+            if getattr(self.options, "replaygain", False):
+                try:
+                    from . import audioinfo as _ai
+                    gain, peak = _ai.replaygain(af.path)
+                    if gain:
+                        f["replaygain_track_gain"] = gain
+                    if peak:
+                        f["replaygain_track_peak"] = peak
+                except Exception:
+                    pass
+            res = tags.write_file(af.path, f, backup=False)
+            results.append(res)
+            if res.ok:
+                log.info("uppdaterade taggar %s -> %s", af.path, sorted(res.written))
+            else:
+                log.warning("misslyckades uppdatera %s: %s", af.path, res.error)
+        # uppdatera .md (alltid om diff fanns)
+        title_dir = _os.path.dirname(group[0].path)
+        # hitta befintlig md (kan heta gammal titel)
+        md_files = [f for f in _os.listdir(title_dir) if f.lower().endswith(".md")] if _os.path.isdir(title_dir) else []
+        # skriv ny md med nytt titel-namn
+        new_md_name = f"{proposal.new_title or proposal.audio.title}.md"
+        md_path = _os.path.join(title_dir, new_md_name)
+        try:
+            quals = [audioinfo.probe(f.path) for f in ordered]
+            md = audioinfo.book_md(
+                title=proposal.new_title or proposal.audio.title,
+                author=proposal.new_artist,
+                album=proposal.new_album,
+                series=proposal.new_series,
+                series_number=proposal.new_series_number,
+                year=proposal.new_year,
+                url=proposal.match.book.url if proposal.match else "",
+                source=proposal.source or "",
+                score=proposal.match.score if proposal.match else 0.0,
+                qualities=quals,
+                extra_note=proposal.note,
+                subtitle=proposal.new_subtitle,
+                narrator=proposal.new_narrator,
+                publisher=proposal.new_publisher,
+                genre=proposal.new_genre,
+                language=proposal.new_language,
+                description=proposal.new_description,
+            )
+            with open(md_path, "w", encoding="utf-8") as fh:
+                fh.write(md)
+            # rensa gammal md om namnet ändrats
+            for old_md in md_files:
+                old_path = _os.path.join(title_dir, old_md)
+                if old_path != md_path and _os.path.exists(old_path):
+                    try:
+                        _os.remove(old_path)
+                        log.info("tog bort gammal md %s", old_path)
+                    except OSError:
+                        pass
+            results.append(tags.WriteResult(md_path, True, ["md"]))
+        except OSError as exc:
+            results.append(tags.WriteResult(md_path, False, [], str(exc)))
+        # omslag: hämta om saknas eller om URL ändrats
+        cover_url = (proposal.match.book.cover if proposal.match else "") or getattr(proposal, "cover_url", "")
+        cover_path = _os.path.join(title_dir, "cover.jpg")
+        if cover_url:
+            needs = not _os.path.exists(cover_path) or getattr(proposal, "_needs_cover", False)
+            # om historiken hade annan url kan vi alltid uppdatera — för 50000000% enkelhet: hämta om cover saknas
+            if needs:
+                try:
+                    import requests
+                    resp = requests.get(cover_url, headers={"User-Agent": "audiobook-goodreads-sync/1.0"}, timeout=30)
+                    head = resp.content[:4]
+                    if resp.status_code == 200 and (head.startswith(b"\xff\xd8\xff") or head.startswith(b"\x89PNG") or head.startswith(b"GIF8")):
+                        with open(cover_path, "wb") as fh:
+                            fh.write(resp.content)
+                        log.info("uppdaterade omslag %s", cover_path)
+                        results.append(tags.WriteResult(cover_path, True, ["cover"]))
+                except Exception as exc:
+                    log.warning("kunde inte hämta omslag %s: %s", cover_url, exc)
+        # uppdatera historikpost om den finns
+        try:
+            key = proposal.identity()
+            # hitta befintlig post via output eller nyckel
+            for e in self.history.entries():
+                if e.get("output") and title_dir.startswith(e["output"]) or e.get("key") == key:
+                    self.history.add(key, title=proposal.new_title, author=proposal.new_artist, series=proposal.new_series, number=proposal.new_series_number, url=proposal.match.book.url if proposal.match else e.get("url",""), score=proposal.match.score if proposal.match else 0, source=proposal.source or "", output=title_dir, files=[f.path for f in group])
+                    break
+        except Exception:
+            pass
+        return results
+
+    # ---------------------------------------------------------------- hela flödet
+    def run(self, root: str, dry_run: bool = True, recursive: bool = True,
+            on_proposal: Optional[Callable[[Proposal], None]] = None) -> list[Proposal]:
+        files = self.scan(root, recursive=recursive)
+        self.on_status(f"{len(files)} ljudfiler hittade")
+        out: list[Proposal] = []
+        for group in self.groups(files):
+            proposal, _ = self.match_group(group)
+            out.append(proposal)
+            if on_proposal:
+                on_proposal(proposal)
+        self.client.save_cache()
+        done = sum(1 for p in out if p.skipped)
+        if done:
+            self.on_status(f"{done} bok/böcker hoppades över (redan klara enligt historiken)")
+        return out
+
+    # ---------------------------------------------------------------- rekommendationer
+    def recommend(self, owned_titles: list[str], author_counts=None,
+                  series_owned=None) -> list:
+        from collections import Counter
+
+        from .recommendations import recommend
+
+        def search_fn(q, limit=8):
+            try:
+                return self.client.search_best(q, limit=limit)
+            except (GoodreadsBlocked, GoodreadsError):
+                if self.fallback is not None:
+                    return self.fallback.search(q, limit=limit)
+                return []
+
+        # senaste böckerna i historiken med Goodreads-länk -> "liknande böcker"
+        hist_books = [(e.get("title", ""), e.get("url", ""))
+                      for e in reversed(self.history.entries()) if e.get("url")]
+
+        def similar_fn(url):
+            return self.client.similar(url) if hasattr(self.client, "similar") else []
+
+        return recommend(search_fn, author_counts or Counter(),
+                         series_owned or {}, owned_titles,
+                         similar_fn=similar_fn, history_books=hist_books)
+
+    # ---------------------------------------------------------------- manuellt
+    def match_text(self, title: str, author: str = "", year: str = "") -> tuple[Proposal, list]:
+        """Matcha en manuellt angiven/OCR-läst titel (skärmbildsläget)."""
+        audio = AudioFile(path=f"<manuellt> {title}", album=title, title=title, artist=author, year=year)
+        audio.group_label = title
+        proposal = Proposal(audio=audio)
+        proposal.paths = []  # type: ignore[attr-defined]
+        proposal.group_size = 1  # type: ignore[attr-defined]
+        self.on_status(f"Söker: {title}")
+        books, source, note = self.resolve(title, author)
+        proposal.source = source
+        if note:
+            proposal.note = note
+        if not books:
+            proposal.status = "blockerad" if getattr(self.client, "blocked", False) else "ej matchad"
+            return proposal, []
+        matches = _clean_ranked(matching.rank(books, audio), title)
+        if matches:
+            best = matches[0]
+            proposal.match = best
+            proposal.candidates = matches  # type: ignore[attr-defined]
+            self._fill(proposal, best, [audio], extract_part(title))
+            proposal.status = matching.status_for(best.score)
+        else:
+            proposal.status = "ej matchad"
+        return proposal, matches
+
+    def from_goodreads_url(self, url: str, audio: Optional[AudioFile] = None) -> tuple[Proposal, list]:
+        """Använd en Goodreads-länk direkt (100 % rätt bok, ingen gissning)."""
+        from .openlibrary import clean_query
+
+        audio = audio or AudioFile(path=url, album=url, title=url)
+        proposal = Proposal(audio=audio)
+        proposal.paths = []  # type: ignore[attr-defined]
+        proposal.group_size = 1  # type: ignore[attr-defined]
+        try:
+            book = self.client.book(url)
+        except GoodreadsBlocked as exc:
+            proposal.status = "blockerad"
+            proposal.note = str(exc)
+            return proposal, []
+        except GoodreadsError as exc:
+            proposal.status = "fel"
+            proposal.note = str(exc)
+            return proposal, []
+        m = matching.score_audio(audio, book)
+        m.score = 1.0  # länken är ett uttryckligt val — ersätter alla reservkällor
+        proposal.match = m
+        # _fill sätter alla fält från Goodreads-boken (titel/serie/författare/omslag etc)
+        self._fill(proposal, m, [audio], book.series_number)
+        proposal.status = "matchad"
+        proposal.source = "goodreads:länk"
+        proposal.note = "100% träff via klistrad Goodreads-länk — ersätter reservkälla"
+        # spara även paths om de följde med via audio (för grupp-manual)
+        if not getattr(proposal, "paths", None):
+            proposal.paths = [audio.path]  # type: ignore[attr-defined]
+        return proposal, [m]
