@@ -247,7 +247,7 @@ Menu **`Remember`** lists last import/output folders + `Save settings now`. `Hel
 - **25% Ops & test** — domain, build, test audiobooks to ship without bugs
 - **20% Coffee & time** — your coffee keeps the keyboard warm
 
-> No tracking. No account in the app. Receipt comes directly from PayPal/Ko-fi. Want your name in the README? Add it to the message. Want to stay anonymous? Leave it empty. Want Swish? Tell me the number/QR and I’ll add a `swish://` button.
+> No tracking. No account in the app. Receipt comes directly from PayPal/Ko-fi. Want your name in the README? Add it to the message. Want to stay anonymous? Leave it empty.
 
 ### 🎁 Choose your support tier — or any amount you like
 
@@ -260,7 +260,6 @@ All tiers use the links above — pick any sum you want (one-time or monthly on 
 | 🌟 **Hero** | `299 kr` | Name in README (if you want) + wishlist priority + eternal gratitude | **[PayPal 299 kr](https://paypal.me/Rickard3dPrint/299SEK)** · [Ko-fi](https://ko-fi.com/tokke2) |
 
 > **Any amount counts** — 20 kr or 500 kr, one-time or monthly. Every krona keeps the 19999% matching alive.
-> **Swish?** Tell me the number/QR and I’ll add a beautiful `swish://` button here.
 > Or open the full thank-you page in the app: `Help → Support the project` → `DONATION.html`
 
 *Thank you — tack!* ❤️ *You make free audiobooks possible.*
