@@ -1,7 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title Audiobro — installer & start (v1.0.0)
+title Audiobro -- installer och start v1.0.0
 echo ==========================================
 echo  Audiobro — installerar Python + tillagg
 echo  och startar appen (v1.0.0)
