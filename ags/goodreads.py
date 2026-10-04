@@ -376,56 +376,294 @@ def _authors_from_search_row(title_anchor) -> list[str]:
     return seen
 
 
-def parse_search_html(html: str) -> list[Book]:
-    """Parsa /search-sidan. Serie ligger ofta i titeln: 'Titel (Serie, #2)'."""
-    from .text import split_series
+def _js_unescape(s: str) -> str:
+    """Avkoda en JSON-strängs innehåll (hanterar citat och unicode utan att förstöra UTF-8)."""
+    if not s:
+        return s
+    try:
+        return json.loads(f'"{s}"')
+    except Exception:
+        try:
+            return bytes(s, "utf-8").decode("unicode_escape")
+        except Exception:
+            return s
 
-    soup = BeautifulSoup(html, "lxml")
+
+def _parse_search_nextjs(html: str) -> list[Book]:
+    """Parsa nya Goodreads Next.js-sökresultatet (2024+).
+
+    HTML:et innehåller RSC-payload i self.__next_f.push([...]) med
+    serialiserade Book-objekt. Vi avkodar pusharna och regexar ut
+    book-objekten direkt — soup.select('a.bookTitle') är död (0 träffar
+    sedan 2026-09).
+    """
+    from .text import split_series
+    import datetime as _dt
+
+    pushes = re.findall(r'self\.__next_f\.push\(\[1,"(.*?)\"\]\)', html, re.DOTALL)
+    if pushes:
+        decoded_all = ""
+        for p in pushes:
+            try:
+                decoded_all += json.loads(f'"{p}"')
+            except Exception:
+                try:
+                    decoded_all += bytes(p, "utf-8").decode("unicode_escape")
+                except Exception:
+                    decoded_all += p
+    else:
+        decoded_all = html
+
+    # Varje bok har triple legacyId + title + imageUrl direkt efter
+    triple_pat = re.compile(
+        r'"legacyId"\s*:\s*(\d+)\s*,\s*"title"\s*:\s*"((?:\\.|[^"\\])*)"\s*,\s*"imageUrl"\s*:\s*"([^"]*)"',
+        re.DOTALL,
+    )
+    triples = list(triple_pat.finditer(decoded_all))
+    if not triples:
+        return []
+
+    positions = [m.start() for m in triples]
     out: list[Book] = []
-    for a in soup.select("a.bookTitle"):
-        href = a.get("href") or ""
-        m = re.search(r"/book/show/([0-9]+)", href)
-        if not m:
-            continue
+    for idx, m in enumerate(triples):
         bid = m.group(1)
-        raw_title = _txt(a.get_text())
-        title, series, num = split_series(raw_title)
-        # författarna ligger i en syskon-span efter titellänken
-        authors = _authors_from_search_row(a)
-        rating = ""
-        rc = ""
-        rate = a.find_next("span", class_="minirating")
-        if rate:
-            txt = _txt(rate.get_text())
-            mr = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*avg", txt)
-            cr = re.search(r"([0-9,\.]+)\s*ratings", txt)
-            rating = mr.group(1) if mr else ""
-            rc = cr.group(1) if cr else ""
+        raw_title = m.group(2)
+        image_url = m.group(3)
+        title = html_lib.unescape(_js_unescape(raw_title)).strip()
+        if not title:
+            continue
+        # Titel kan redan innehålla serie-parantes — behåll som fallback
+        _t, _s_fallback, _n_fallback = split_series(title)
+
+        start = m.start()
+        end = positions[idx + 1] if idx + 1 < len(positions) else start + 20000
+        chunk = decoded_all[start:end]
+        if len(chunk) > 15000:
+            chunk = chunk[:15000]
+
+        # URL & omslag
+        wm = re.search(r'"webUrl"\s*:\s*"([^"]*book/show/[^"]*)"', chunk)
+        web_url = wm.group(1) if wm else f"{BASE}/book/show/{bid}"
+        web_url = web_url.replace("\\u0026", "&").split("?")[0]
+        cover = image_url.replace("\\u0026", "&")
+
+        # Författare — primary + secondary där role==Author
+        authors: list[str] = []
+        pm = re.search(
+            r'"primaryContributorEdge".*?"name"\s*:\s*"((?:\\.|[^"\\])*)".*?"role"\s*:\s*"([^"]*)"',
+            chunk,
+            re.DOTALL,
+        )
+        if pm:
+            raw_name, role = pm.group(1), pm.group(2)
+            name = html_lib.unescape(_js_unescape(raw_name)).strip()
+            name = " ".join(name.split())
+            if name and role.lower() == "author":
+                authors.append(name)
+
+        sec_block_m = re.search(
+            r'"secondaryContributorEdges"\s*:\s*\[(.*?)\]\s*,\s*"reviewEditUrl"',
+            chunk,
+            re.DOTALL,
+        )
+        sec_block = sec_block_m.group(1) if sec_block_m else ""
+        if sec_block:
+            for raw_name, role in re.findall(
+                r'"name"\s*:\s*"((?:\\.|[^"\\])*)".*?"role"\s*:\s*"([^"]*)"',
+                sec_block,
+                re.DOTALL,
+            ):
+                name = html_lib.unescape(_js_unescape(raw_name)).strip()
+                name = " ".join(name.split())
+                if name and role.lower() == "author" and name not in authors:
+                    authors.append(name)
+
+        if not authors:
+            # Fallback: plocka första rimliga contributor-namn i chunken
+            for raw_name in re.findall(r'"name"\s*:\s*"((?:\\.|[^"\\])*)"', chunk[:6000]):
+                name = html_lib.unescape(_js_unescape(raw_name)).strip()
+                name = " ".join(name.split())
+                if name and 1 < len(name) < 40 and name not in authors:
+                    if " " in name or not authors:
+                        authors.append(name)
+                    if len(authors) >= 2:
+                        break
+
+        # Serie & delnummer
+        series = ""
+        series_number = ""
+        sm = re.search(
+            r'"bookSeries":\[{"__typename":"BookSeries","seriesPlacement":"([^"]*)","series":\{"__typename":"Series","id":"[^"]*","title":"((?:\\.|[^"\\])*)"',
+            chunk,
+            re.DOTALL,
+        )
+        if sm:
+            series_number = sm.group(1)
+            raw_series = sm.group(2)
+            series = html_lib.unescape(_js_unescape(raw_series)).strip()
+        else:
+            sm2 = re.search(
+                r'"bookSeries":\[[^\]]*?"title"\s*:\s*"((?:\\.|[^"\\])*)"',
+                chunk,
+                re.DOTALL,
+            )
+            if sm2:
+                raw_series = sm2.group(1)
+                series = html_lib.unescape(_js_unescape(raw_series)).strip()
+                plc = re.search(r'"seriesPlacement"\s*:\s*"([^"]*)"', chunk)
+                if plc:
+                    series_number = plc.group(1)
+            # Ingen bookSeries — försök serie från titel-parantes som fallback
+            if not series and _s_fallback:
+                series = _s_fallback
+                series_number = _n_fallback
+
+        if series_number and "-" in series_number:
+            series_number = series_number.split("-")[0]
+        series_number = series_number.strip()
+        series = clean_series(series)
+
+        # År från publicationTime (ms)
         year = ""
-        y = a.find_next("span", class_="uitext")
-        if y:
-            ym = re.search(r"\b(1[89][0-9]{2}|20[0-9]{2})\b", _txt(y.get_text()))
-            year = ym.group(1) if ym else ""
-        img = a.find_previous("img", class_="bookCover")
-        cover = ""
-        if img is not None:
-            cover = img.get("src") or ""
+        ptm = re.search(r'"publicationTime"\s*:\s*(\d+)', chunk)
+        if ptm:
+            try:
+                ts = int(ptm.group(1))
+                import datetime as _dt2
+
+                year = str(_dt2.datetime.fromtimestamp(ts / 1000, tz=_dt2.timezone.utc).year)
+            except Exception:
+                year = ""
+
+        # Betyg
+        rating = ""
+        rm = re.search(r'"averageRating"\s*:\s*([0-9.]+)', chunk)
+        if rm:
+            rating = rm.group(1)
+        ratings_count = ""
+        rcm = re.search(r'"ratingsCount"\s*:\s*(\d+)', chunk)
+        if rcm:
+            ratings_count = rcm.group(1)
+
         out.append(
             Book(
                 book_id=bid,
-                url=urljoin(BASE, href.split("?")[0]),
-                title=title,
+                url=urljoin(BASE, web_url.split("?")[0]),
+                title=_t,
                 authors=authors,
-                series=clean_series(series),
-                series_number=num,
+                series=series,
+                series_number=series_number,
                 year=year,
                 rating=rating,
-                ratings_count=rc,
+                ratings_count=ratings_count,
                 cover=cover,
                 source="goodreads:sök",
             )
         )
     return out
+
+
+def parse_search_html(html: str) -> list[Book]:
+    """Parsa /search-sidan. Hanterar både legacy-HTML (a.bookTitle) och nya Next.js-RSC."""
+    from .text import split_series
+
+    soup = BeautifulSoup(html, "lxml")
+    out: list[Book] = []
+    # 1. Legacy-path (före 2024): a.bookTitle — behåll för bakåtkompatibilitet + tester
+    legacy_anchors = soup.select("a.bookTitle")
+    if legacy_anchors:
+        for a in legacy_anchors:
+            href = a.get("href") or ""
+            m = re.search(r"/book/show/([0-9]+)", href)
+            if not m:
+                continue
+            bid = m.group(1)
+            raw_title = _txt(a.get_text())
+            title, series, num = split_series(raw_title)
+            authors = _authors_from_search_row(a)
+            rating = ""
+            rc = ""
+            rate = a.find_next("span", class_="minirating")
+            if rate:
+                txt = _txt(rate.get_text())
+                mr = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*avg", txt)
+                cr = re.search(r"([0-9,\\.]+)\s*ratings", txt)
+                rating = mr.group(1) if mr else ""
+                rc = cr.group(1) if cr else ""
+            year = ""
+            y = a.find_next("span", class_="uitext")
+            if y:
+                ym = re.search(r"\b(1[89][0-9]{2}|20[0-9]{2})\b", _txt(y.get_text()))
+                year = ym.group(1) if ym else ""
+            img = a.find_previous("img", class_="bookCover")
+            cover = ""
+            if img is not None:
+                cover = img.get("src") or ""
+            out.append(
+                Book(
+                    book_id=bid,
+                    url=urljoin(BASE, href.split("?")[0]),
+                    title=title,
+                    authors=authors,
+                    series=clean_series(series),
+                    series_number=num,
+                    year=year,
+                    rating=rating,
+                    ratings_count=rc,
+                    cover=cover,
+                    source="goodreads:sök",
+                )
+            )
+        if out:
+            return out
+
+    # 2. Nya Next.js (2024+): RSC-payload i self.__next_f — primär sedan Goodreads migrerade
+    try:
+        nxt = _parse_search_nextjs(html)
+        if nxt:
+            log.info("Goodreads sök: Next.js-parser gav %d träffar", len(nxt))
+            return nxt
+    except Exception as exc:  # pragma: no cover
+        log.debug("Next.js parse_search misslyckades: %s", exc)
+
+    # 3. Sist fallback: generisk grav — a[href*=book/show] med text (för att aldrig ge 0 träffar)
+    try:
+        seen: set[str] = set()
+        for a in soup.select("a[href*='/book/show/']"):
+            href = a.get("href") or ""
+            m = re.search(r"/book/show/([0-9]+)", href)
+            if not m:
+                continue
+            bid = m.group(1)
+            if bid in seen:
+                continue
+            txt = _txt(a.get_text())
+            if not txt or len(txt) < 2:
+                continue
+            seen.add(bid)
+            title, series, num = split_series(txt)
+            out.append(
+                Book(
+                    book_id=bid,
+                    url=urljoin(BASE, href.split("?")[0]),
+                    title=title,
+                    authors=[],
+                    series=clean_series(series),
+                    series_number=num,
+                    cover="",
+                    source="goodreads:sök",
+                )
+            )
+            if len(out) >= 20:
+                break
+        if out:
+            log.info("Goodreads sök: fallback grav gav %d träffar", len(out))
+            return out
+    except Exception:
+        pass
+
+    return out
+
 
 
 def parse_book_html(html: str, url: str = "") -> Book:

@@ -326,6 +326,18 @@ class Engine:
                     part_q = f"{base} {part}"
                     if part_q not in (q, short):
                         merge(self.client.search_best(part_q, limit=4))
+                # Fallback: titel utan författare — Goodreads sök med författare kan dränkas i studieguider/summaries
+                # (t.ex. "Project Hail Mary Andy Weir" ger 18 summaries medan "Project Hail Mary" ger romanen).
+                # Denna extra fråga säkerställer att riktiga romanen alltid finns bland kandidaterna.
+                title_only = clean_query(title, "")
+                if title_only and title_only not in (q, short):
+                    # Undvik att skicka "lazylibrarian" etc
+                    from .text import looks_like_junk_title as _is_junk
+                    if title_only and not _is_junk(title_only):
+                        try:
+                            merge(self.client.search_best(title_only, limit=4))
+                        except Exception:
+                            pass
             except GoodreadsBlocked as exc:
                 _log.warning("goodreads blockerad för %r: %s", q, exc)
                 # Tillåt upp till 3 automatiska upplåsningar per scan (inte bara 1) — vid stora bibliotek kan token hinna gå ut mitt i
