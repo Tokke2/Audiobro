@@ -564,15 +564,24 @@ def _parse_search_nextjs(html: str) -> list[Book]:
 
 
 def parse_search_html(html: str) -> list[Book]:
-    """Parsa /search-sidan. Hanterar både legacy-HTML (a.bookTitle) och nya Next.js-RSC."""
+    """Parsa /search-sidan. Stöder både legacy-HTML (a.bookTitle) och
+    nya Next.js/RSC (2024+) där sökresultaten ligger som escapat JSON
+    i sidans RSC-payload / __NEXT_DATA__.
+
+    Serie ligger ofta i titeln: 'Titel (Serie, #2)'.
+    Returnerar alltid Book med minst book_id + title; författare/rating
+    fylls om möjligt, annars lämnas tomt och rankningen sköter author_score.
+    """
     from .text import split_series
 
     soup = BeautifulSoup(html, "lxml")
     out: list[Book] = []
-    # 1. Legacy-path (före 2024): a.bookTitle — behåll för bakåtkompatibilitet + tester
-    legacy_anchors = soup.select("a.bookTitle")
-    if legacy_anchors:
-        for a in legacy_anchors:
+
+    # 1) Legacy: klassiska Goodreads före 2023 — a.bookTitle
+    # ------------------------------------------------------
+    legacy_as = soup.select("a.bookTitle")
+    if legacy_as:
+        for a in legacy_as:
             href = a.get("href") or ""
             m = re.search(r"/book/show/([0-9]+)", href)
             if not m:
@@ -587,7 +596,7 @@ def parse_search_html(html: str) -> list[Book]:
             if rate:
                 txt = _txt(rate.get_text())
                 mr = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*avg", txt)
-                cr = re.search(r"([0-9,\\.]+)\s*ratings", txt)
+                cr = re.search(r"([0-9,\.]+)\s*ratings", txt)
                 rating = mr.group(1) if mr else ""
                 rc = cr.group(1) if cr else ""
             year = ""
@@ -615,56 +624,182 @@ def parse_search_html(html: str) -> list[Book]:
                 )
             )
         if out:
-            return out
+            return out[:20]
 
-    # 2. Nya Next.js (2024+): RSC-payload i self.__next_f — primär sedan Goodreads migrerade
+    # 2) Next.js __NEXT_DATA__ (om sidan serveras som JSON)
+    # ------------------------------------------------------
+    try:
+        script = soup.find("script", id="__NEXT_DATA__")
+        if script and script.string:
+            try:
+                data = json.loads(script.string)
+            except Exception:
+                data = None
+            if isinstance(data, dict):
+                # Rekursiv sökning efter dicts som ser ut som böcker
+                found = []
+                def _walk(obj):
+                    if isinstance(obj, dict):
+                        # Typisk bokdict har "legacyId" eller "bookId" + "title"
+                        if ("legacyId" in obj or "bookId" in obj) and "title" in obj:
+                            # Försök avgöra om det är en bok och inte en serie
+                            bid = str(obj.get("legacyId") or obj.get("bookId") or "")
+                            ttl = str(obj.get("title") or "").strip()
+                            if bid.isdigit() and ttl and len(ttl) > 1 and len(ttl) < 300:
+                                found.append(obj)
+                        for v in obj.values():
+                            _walk(v)
+                    elif isinstance(obj, list):
+                        for it in obj:
+                            _walk(it)
+                _walk(data)
+                seen = set()
+                for obj in found:
+                    bid = str(obj.get("legacyId") or obj.get("bookId") or "").strip()
+                    if not bid or bid in seen:
+                        continue
+                    seen.add(bid)
+                    raw_title = _txt(str(obj.get("title") or ""))
+                    if not raw_title:
+                        continue
+                    title, series, num = split_series(raw_title)
+                    # Författare i Next-data ligger ofta som contributor-array
+                    authors = []
+                    # Prova flera nycklar
+                    for key in ("primaryContributorEdge", "contributors", "authors", "author"):
+                        val = obj.get(key)
+                        if isinstance(val, dict) and "node" in val:
+                            nm = val["node"].get("name") or val["node"].get("displayName") or ""
+                            if nm:
+                                authors.append(_txt(nm))
+                        elif isinstance(val, list):
+                            for it in val:
+                                if isinstance(it, dict):
+                                    nm = it.get("name") or it.get("displayName") or (it.get("node") or {}).get("name") or ""
+                                    if nm:
+                                        authors.append(_txt(nm))
+                                elif isinstance(it, str) and it.strip():
+                                    authors.append(_txt(it))
+                        elif isinstance(val, str) and val.strip():
+                            authors.append(_txt(val))
+                    # Cut till unika, max 3
+                    uniq = []
+                    for a in authors:
+                        if a and a not in uniq:
+                            uniq.append(a)
+                    authors = uniq[:3]
+                    out.append(Book(
+                        book_id=bid,
+                        url=f"{BASE}/book/show/{bid}",
+                        title=title,
+                        authors=authors,
+                        series=clean_series(series),
+                        series_number=num,
+                        source="goodreads:sök(next)",
+                    ))
+                if out:
+                    return out[:20]
+    except Exception as exc:
+        log.debug("NEXT_DATA parse fallback: %s", exc)
+
+    # 3) RSC via _parse_search_nextjs (detaljerad Next.js-parser med triple legacyId/title/imageUrl)
+    # --------------------------------------------------------------------------------------
     try:
         nxt = _parse_search_nextjs(html)
         if nxt:
-            log.info("Goodreads sök: Next.js-parser gav %d träffar", len(nxt))
-            return nxt
-    except Exception as exc:  # pragma: no cover
-        log.debug("Next.js parse_search misslyckades: %s", exc)
+            return nxt[:20]
+    except Exception as exc:
+        log.debug("RSC _parse_search_nextjs fallback: %s", exc)
 
-    # 3. Sist fallback: generisk grav — a[href*=book/show] med text (för att aldrig ge 0 träffar)
+    # 3b) Lätt RSC-regex som backup om triple missar (titel före/efter legacyId utan imageUrl)
     try:
-        seen: set[str] = set()
-        for a in soup.select("a[href*='/book/show/']"):
-            href = a.get("href") or ""
-            m = re.search(r"/book/show/([0-9]+)", href)
-            if not m:
-                continue
-            bid = m.group(1)
+        cleaned = html.replace('\\"', '"').replace("\'", "'").replace("\/", "/")
+        cleaned = html_lib.unescape(cleaned)
+        seen = set()
+        pat_a = re.compile(r'"title"\s*:\s*"([^"]+?)"[^}]{0,800}?"legacyId"\s*:\s*"?(\d+)"?', re.DOTALL)
+        pat_b = re.compile(r'"legacyId"\s*:\s*"?(\d+)"?[^}]{0,800}?"title"\s*:\s*"([^"]+?)"', re.DOTALL)
+        candidates = []
+        for m in pat_a.finditer(cleaned):
+            title_raw, bid = m.group(1), m.group(2)
+            candidates.append((bid, title_raw, m.start()))
+        for m in pat_b.finditer(cleaned):
+            bid, title_raw = m.group(1), m.group(2)
+            candidates.append((bid, title_raw, m.start()))
+        candidates.sort(key=lambda x: x[2])
+        for bid, title_raw, _pos in candidates:
             if bid in seen:
                 continue
-            txt = _txt(a.get_text())
-            if not txt or len(txt) < 2:
-                continue
             seen.add(bid)
-            title, series, num = split_series(txt)
-            out.append(
-                Book(
-                    book_id=bid,
-                    url=urljoin(BASE, href.split("?")[0]),
-                    title=title,
-                    authors=[],
-                    series=clean_series(series),
-                    series_number=num,
-                    cover="",
-                    source="goodreads:sök",
-                )
-            )
+            if not bid.isdigit() or len(title_raw) < 2 or len(title_raw) > 300:
+                continue
+            low = title_raw.strip().lower()
+            if low in ("goodreads", "search", "books", "series"):
+                continue
+            from .text import split_series as _ss2
+            title, series, num = _ss2(_txt(title_raw))
+            if not title:
+                continue
+            out.append(Book(
+                book_id=bid,
+                url=f"{BASE}/book/show/{bid}",
+                title=title,
+                authors=[],
+                series=clean_series(series),
+                series_number=num,
+                source="goodreads:sök(rsc)",
+            ))
             if len(out) >= 20:
                 break
         if out:
-            log.info("Goodreads sök: fallback grav gav %d träffar", len(out))
-            return out
-    except Exception:
-        pass
+            return out[:20]
+    except Exception as exc:
+        log.debug("RSC light fallback: %s", exc)
 
+    # 4) Sista fallback: plocka alla /book/show/<id>-länkar via regex
+    #    Ger åtminstone id:n även om titel saknas (titel hämtas via book-sidan senare)
+    try:
+        href_pat = re.compile(r'/book/show/(\d+)(?:[^\d]|$)')
+        seen = set(b.book_id for b in out)
+        for m in href_pat.finditer(html):
+            bid = m.group(1)
+            if bid in seen:
+                continue
+            seen.add(bid)
+            # Försök gissa titel från närliggande text (ta 300 tecken före/efter)
+            snippet = html[max(0, m.start()-400):m.end()+400]
+            # Leta efter title-nyckel nära
+            tm = re.search(r'"title"\s*:\s*"([^"]+)"', snippet)
+            title_raw = tm.group(1) if tm else f"Book {bid}"
+            title_raw = _txt(html_lib.unescape(title_raw))
+            title, series, num = split_series(title_raw)
+            if not title or title.startswith("Book "):
+                # Försök även i rå snippeten utan JSON
+                # Ta texten mellan > och < nära länken
+                mt = re.search(r'>([^<]{3,120})<', snippet)
+                if mt:
+                    cand = _txt(mt.group(1))
+                    if len(cand) > 3 and len(cand) < 120 and "book" not in cand.lower():
+                        title, series, num = split_series(cand)
+            if not title:
+                continue
+            out.append(Book(
+                book_id=bid,
+                url=f"{BASE}/book/show/{bid}",
+                title=title,
+                authors=[],
+                series=clean_series(series),
+                series_number=num,
+                source="goodreads:sök(href)",
+            ))
+            if len(out) >= 20:
+                break
+        if out:
+            return out[:20]
+    except Exception as exc:
+        log.debug("href fallback: %s", exc)
+
+    # Inget hittat — returnera tomt (Engine.resolve tar hand om fallback-sök)
     return out
-
-
 
 def parse_book_html(html: str, url: str = "") -> Book:
     """Parsa en /book/show/-sida."""

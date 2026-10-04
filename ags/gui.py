@@ -2547,9 +2547,14 @@ class App:
         if not out:
             messagebox.showwarning("Output", "Välj en outputmapp i inställningarna.")
             return
-        certain = [p for p in proposals
-                   if p.status == "matchad"
-                   or (include_done and p.status == "klar (historik)")]
+        # include_done=True (högerklick "Organisera vald bok") ska tillåta även
+        # "klar (historik)" och "klar (organiserad)" att tvingas, och även om
+        # raden redan är applied i denna session (annars blir todo tom).
+        if include_done:
+            certain = [p for p in proposals
+                       if p.status in ("matchad", "klar (historik)", "klar (organiserad)")]
+        else:
+            certain = [p for p in proposals if p.status == "matchad"]
         uncertain = [p for p in proposals if p.status == "behöver koll"]
         if uncertain:
             if ask_uncertain:
@@ -2563,7 +2568,11 @@ class App:
                     uncertain = []
             else:
                 uncertain = []
-        todo = [p for p in certain + uncertain if not p.applied]
+        # Vid tvingad organisering (include_done) tillåt även redan applied-rader
+        if include_done:
+            todo = list(certain + uncertain)
+        else:
+            todo = [p for p in certain + uncertain if not p.applied]
         if not todo:
             statuser = ", ".join(sorted({p.status for p in proposals})) or "inga"
             messagebox.showinfo(
@@ -2898,10 +2907,14 @@ class App:
         History().clear()
         self._refresh_history()
 
-    # ---------------------------------------------- fråga vid historikträff (krav 21)
+    # ---------------------------------------------- fråga vid historikträff (krav 21) + ljudkvalitet (2026-10-04)
     def _ask_history(self, proposal, ent) -> bool:
         """'Tidigare importerad — hoppa över?' Körs i skanntråden; dialogen
-        visas i huvudtråden via kön och tråden väntar på svaret."""
+        visas i huvudtråden via kön och tråden väntar på svaret.
+
+        Om samma bok redan finns med sämre ljud och nya filerna har bättre ljud
+        (higher bitrate/codec) frågar vi om ersättning istället.
+        """
         import threading
 
         ev = threading.Event()
@@ -2909,8 +2922,32 @@ class App:
         title = proposal.new_title or proposal.audio.title or "?"
         author = proposal.new_artist or proposal.audio.artist or "?"
         when = (ent.get("finished_at") or "").strip()
-        self.queue.put(("askhist", (title, author, when, ev, answer)))
+        # Kolla om bättre ljud finns — skicka med till GUI för kvalitetsdialog
+        is_better = bool(getattr(proposal, "_is_better_audio", False))
+        old_audio = getattr(proposal, "_old_audio", None) or ent.get("audio") or {}
+        new_audio = getattr(proposal, "_new_audio", None) or {}
+        if is_better and isinstance(old_audio, dict) and isinstance(new_audio, dict) and old_audio and new_audio:
+            try:
+                from .history import audio_description as _ad
+                old_desc = _ad(old_audio)
+                new_desc = _ad(new_audio)
+            except Exception:
+                old_desc = str(old_audio)
+                new_desc = str(new_audio)
+            # Skicka 8-tuple för kvalitetsdialog
+            self.queue.put(("askhist", (title, author, when, ev, answer, old_desc, new_desc, True)))
+        else:
+            self.queue.put(("askhist", (title, author, when, ev, answer)))
         ev.wait(timeout=600)
+        # Om användaren valde att ersätta med bättre ljud, markera för organize
+        if not answer["skip"] and is_better:
+            try:
+                proposal._replace_old = True  # type: ignore[attr-defined]
+                proposal._old_output = ent.get("output")  # type: ignore[attr-defined]
+                proposal._old_audio = old_audio  # type: ignore[attr-defined]
+                proposal._new_audio = new_audio  # type: ignore[attr-defined]
+            except Exception:
+                pass
         return bool(answer["skip"])
 
     # ------------------------------------------------------------- logg
@@ -3628,13 +3665,33 @@ class App:
                         pass
                     elif kind == "askhist":
                         try:
-                            title, author, when, ev, answer = payload
-                            from tkinter import messagebox as _mb
-                            # Visa fråga i huvudtråden (poll körs i huvudtråden)
-                            q = f"\"{title}\" av {author} är redan organiserad" + (f" ({when})" if when else "") + ".\n\nHoppa över (Ja) eller matcha på nytt (Nej)?"
-                            res = _mb.askyesno("Redan klar — hoppa över?", q)
-                            answer["skip"] = bool(res)
-                            ev.set()
+                            # Kvalitetsmedveten dialog: 8-tuple = bättre ljud, annars 5-tuple = vanlig
+                            if isinstance(payload, (list, tuple)) and len(payload) == 8:
+                                title, author, when, ev, answer, old_desc, new_desc, _is_better = payload
+                                from tkinter import messagebox as _mb
+                                q = (
+                                    f"\"{title}\" av {author} är redan organiserad"
+                                    + (f" ({when})" if when else "")
+                                    + "."
+                                    + f"\n\nTidigare ljud: {old_desc}"
+                                    + f"\nNytt ljud:      {new_desc}"
+                                    + "\n\nNya filerna har BÄTTRE ljud (högre bitrate/kvalitet)!"
+                                    + "\n\nVill du ERSÄTTA den gamla med den nya?"
+                                    + "\n\nJa = Ersätt (ta bort gammal, organisera nya med bättre ljud)"
+                                    + "\nNej = Behåll gammal (hoppa över denna)"
+                                )
+                                res = _mb.askyesno("Bättre ljud hittat — ersätta?", q)
+                                # Yes (True) = ersätt -> skip=False, No (False) = behåll -> skip=True
+                                answer["skip"] = not bool(res)
+                                ev.set()
+                            else:
+                                title, author, when, ev, answer = payload
+                                from tkinter import messagebox as _mb
+                                # Visa fråga i huvudtråden (poll körs i huvudtråden)
+                                q = f"\"{title}\" av {author} är redan organiserad" + (f" ({when})" if when else "") + ".\n\nHoppa över (Ja) eller matcha på nytt (Nej)?"
+                                res = _mb.askyesno("Redan klar — hoppa över?", q)
+                                answer["skip"] = bool(res)
+                                ev.set()
                         except Exception as exc:
                             LOG.debug("askhist fel: %s", exc)
                             try:

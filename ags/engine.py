@@ -570,6 +570,7 @@ class Engine:
         query_candidates = flat if flat else [query]
 
         # Krav 21: redan organiserad bok -> arkiverad i historiken, ingen sökning.
+        # 2026-10-04: även ljudkvalitet sparas — om samma bok laddas med bättre ljud, fråga om ersättning
         rematch = False   # True om användaren svarat "matcha på nytt" på frågan
         if self.options.skip_done:
             cur = library.read_tags(rep.path)
@@ -578,6 +579,34 @@ class Engine:
                                           cur.get("series", ""),
                                           cur.get("series_number", ""))
             if ent:
+                # Beräkna ljudkvalitet för inkommande filer vs sparad historik
+                try:
+                    from .history import audio_description as _ad, is_better_audio as _is_better, summarize_audio_qualities as _summ
+                    from . import audioinfo as _ai
+                    new_quals = []
+                    for af in group[:4]:
+                        if af.path and os.path.exists(af.path):
+                            try:
+                                new_quals.append(_ai.probe(af.path))
+                            except Exception:
+                                continue
+                    new_audio = _summ(new_quals) if new_quals else {}
+                    old_audio = ent.get("audio") or {}
+                    is_better = _is_better(new_audio, old_audio) if old_audio else False
+                    # Spara för dialogen i GUI (så den kan visa jämförelse)
+                    proposal._new_audio = new_audio  # type: ignore[attr-defined]
+                    proposal._old_audio = old_audio  # type: ignore[attr-defined]
+                    proposal._is_better_audio = is_better  # type: ignore[attr-defined]
+                    if is_better:
+                        old_desc = _ad(old_audio)
+                        new_desc = _ad(new_audio)
+                        proposal.note = f"tidigare importerad med sämre ljud ({old_desc}) — ny version har bättre ljud ({new_desc}) — fråga om ersättning"
+                        log.info("historikträff med bättre ljud: %r gammal=%s ny=%s", audio.group_label, old_desc, new_desc)
+                    else:
+                        proposal.note = "tidigare importerad — hoppas över (matchas inte på nytt)"
+                except Exception as _e:
+                    log.debug("ljudjämförelse för historik misslyckades: %s", _e)
+                    proposal.note = "tidigare importerad — hoppas över (matchas inte på nytt)"
                 proposal.status = "klar (historik)"
                 proposal.skipped = True
                 proposal.source = "historik"
@@ -585,7 +614,6 @@ class Engine:
                 proposal.new_artist = ent.get("author") or audio.artist
                 proposal.new_series = ent.get("series") or ""
                 proposal.new_series_number = ent.get("number") or ""
-                proposal.note = "tidigare importerad — hoppas över (matchas inte på nytt)"
                 if self.on_history_hit is None or self.on_history_hit(proposal, ent):
                     log.info("matchning %r -> klar (historik) via %s, ingen sökning görs",
                              audio.group_label, ent.get("key", "?")[:12])
@@ -594,6 +622,14 @@ class Engine:
                 rematch = True
                 proposal.status, proposal.skipped, proposal.source = "ej matchad", False, ""
                 proposal.note = ""
+                # Markera för ersättning om nya har bättre ljud (för organize-rensning)
+                try:
+                    if getattr(proposal, "_is_better_audio", False):
+                        proposal._replace_old = True  # type: ignore[attr-defined]
+                        proposal._old_output = ent.get("output")  # type: ignore[attr-defined]
+                        log.info("bättre ljud valt för ersättning: %r gammal=%s", audio.group_label, ent.get("output"))
+                except Exception:
+                    pass
                 log.info("matchning %r -> användaren vill matcha på nytt trots historikträff",
                          audio.group_label)
 
@@ -653,9 +689,65 @@ class Engine:
                  best.book.display, best.score, proposal.status,
                  f", minus {best.penalty:.2f}" if getattr(best, "penalty", 0) > 0 else "")
         if self.options.skip_done and not rematch and self.history.is_done(proposal.identity()):
-            proposal.status = "klar (historik)"
-            proposal.skipped = True
-            log.info("hoppar över %r — redan färdigbehandlad", audio.group_label)
+            # Kvalitetsmedveten historik-koll även efter matchning (andra spärren).
+            # Om samma nyckel redan finns men nya filerna har bättre ljud, ska vi inte
+            # automatiskt hoppa över — fråga istället.
+            _skip_history = True
+            _is_better_after = False
+            try:
+                ent_after = self.history.find(proposal.identity())
+                if ent_after and ent_after.get("audio"):
+                    from .history import is_better_audio as _is_b2, summarize_audio_qualities as _summ2b, audio_description as _ad2
+                    from . import audioinfo as _ai2b
+                    new_quals2: list = []
+                    for af in group[:4]:
+                        _pp = getattr(af, "path", None)
+                        if _pp and os.path.exists(_pp):
+                            try:
+                                new_quals2.append(_ai2b.probe(_pp))
+                            except Exception:
+                                continue
+                    new_audio2 = _summ2b(new_quals2) if new_quals2 else {}
+                    old_audio2 = ent_after.get("audio") or {}
+                    if new_audio2 and old_audio2 and _is_b2(new_audio2, old_audio2):
+                        _is_better_after = True
+                        # Sätt attribut för dialog
+                        proposal._new_audio = new_audio2  # type: ignore[attr-defined]
+                        proposal._old_audio = old_audio2  # type: ignore[attr-defined]
+                        proposal._is_better_audio = True  # type: ignore[attr-defined]
+                        proposal.note = f"tidigare importerad med sämre ljud ({_ad2(old_audio2)}) — ny version har bättre ljud ({_ad2(new_audio2)}) — fråga om ersättning"
+                        log.info("historikträff med bättre ljud efter matchning %r gammal=%s ny=%s",
+                                 proposal.identity(), _ad2(old_audio2), _ad2(new_audio2))
+                        # Fråga användaren om vi har en callback
+                        if self.on_history_hit is not None:
+                            try:
+                                _skip_history = bool(self.on_history_hit(proposal, ent_after))
+                            except Exception as exc:
+                                log.warning("on_history_hit efter match fel: %s", exc)
+                                _skip_history = True
+                        else:
+                            _skip_history = False  # utan GUI: tillåt ersättning
+                        if not _skip_history:
+                            try:
+                                proposal._replace_old = True  # type: ignore[attr-defined]
+                                proposal._old_output = ent_after.get("output")  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+            except Exception as exc:
+                log.debug("kvalitetsjämförelse efter match fel: %s", exc)
+            if _skip_history and not _is_better_after:
+                proposal.status = "klar (historik)"
+                proposal.skipped = True
+                log.info("hoppar över %r — redan färdigbehandlad", audio.group_label)
+            elif _skip_history and _is_better_after:
+                proposal.status = "klar (historik)"
+                proposal.skipped = True
+                log.info("hoppar över %r trots bättre ljud — användaren valde att behålla gammal", audio.group_label)
+            else:
+                # Bättre ljud och användaren vill ersätta — hoppa inte över
+                log.info("hoppar INTE över %r — bättre ljud och användaren vill ersätta", audio.group_label)
+                # Behåll proposal.status som matchad, säkerställ att skipped är False
+                proposal.skipped = False
         if matching.needs_manual(matches):
             proposal.status = "behöver koll"
             extra = f"Två nära träffar ({best.score:.2f} vs {matches[1].score:.2f})"
@@ -766,6 +858,41 @@ class Engine:
     def organize(self, proposal: Proposal, group: list[AudioFile], out_root: str,
                  move: bool = False) -> organize.OrganizeResult:
         """Kopiera/flytta + tagga + .md + historik, Audiobookshelf-struktur."""
+        # 2026-10-04: Om samma bok redan finns med sämre ljud och användaren valt
+        # "Ersätt", rensa gamla output-mappen innan ny kopiering (så gamla filer
+        # inte ligger kvar bredvid nya med bättre kvalitet).
+        if getattr(proposal, "_replace_old", False):
+            old_output = getattr(proposal, "_old_output", None)
+            # Fallback: hämta från historiken om attribut saknas
+            if not old_output:
+                try:
+                    old_output = (self.history.find(proposal.identity()) or {}).get("output")
+                except Exception:
+                    old_output = None
+            if old_output and os.path.isdir(old_output):
+                try:
+                    import shutil
+                    # Säkerhet: rensa endast om mappen ligger under out_root eller är den exakta gamla mappen
+                    abs_old = os.path.abspath(old_output)
+                    abs_root = os.path.abspath(out_root) if out_root else ""
+                    if not abs_root or abs_old.startswith(abs_root) or os.path.commonpath([abs_old, abs_root]) == abs_root:
+                        shutil.rmtree(old_output)
+                        log.info("ersätter med bättre ljud — tog bort gammal output %s", old_output)
+                        # Återskapa inte här, organize.execute skapar vid behov
+                    else:
+                        # Om gamla mappen ligger utanför out_root (ovanligt), rensa endast filer inuti
+                        for _f in os.listdir(old_output):
+                            _fp = os.path.join(old_output, _f)
+                            try:
+                                if os.path.isfile(_fp):
+                                    os.remove(_fp)
+                                elif os.path.isdir(_fp):
+                                    shutil.rmtree(_fp)
+                            except Exception:
+                                pass
+                        log.info("ersätter med bättre ljud — rensade filer i %s", old_output)
+                except Exception as exc:
+                    log.warning("kunde inte rensa gammal output %s vid ersättning: %s", old_output, exc)
         # Om ReplayGain är aktiverat, beräkna per källfil och lägg på förslaget
         # så att organize.execute kan återanvända samma fält per målfil
         # (vi lagrar temporärt på proposal för att undvika API-bryt).
@@ -807,6 +934,30 @@ class Engine:
         else:
             key = proposal.identity()
             paths = [a.dst for a in res.actions if a.kind in ("copy", "move", "tags")]
+            # Spara även ljudkvalitet i historiken (för framtida "bättre ljud?"-fråga)
+            audio_info = None
+            try:
+                from .history import summarize_audio_qualities as _summ2
+                from . import audioinfo as _ai2
+                quals = []
+                for dst in paths[:6]:
+                    if dst and os.path.exists(dst):
+                        try:
+                            quals.append(_ai2.probe(dst))
+                        except Exception:
+                            continue
+                # Fallback: prova källfiler om output ännu ej finns (dry-run)
+                if not quals:
+                    for af in group[:4]:
+                        if af.path and os.path.exists(af.path):
+                            try:
+                                quals.append(_ai2.probe(af.path))
+                            except Exception:
+                                continue
+                if quals:
+                    audio_info = _summ2(quals)
+            except Exception as _e:
+                log.debug("kunde inte sammanfatta ljud för historik: %s", _e)
             self.history.add(
                 key,
                 title=proposal.new_title,
@@ -818,8 +969,9 @@ class Engine:
                 source=proposal.source or "",
                 output=res.title_dir,
                 files=paths,
+                audio=audio_info,
             )
-            log.info("historik: %r klar -> %s", proposal.new_title, res.title_dir)
+            log.info("historik: %r klar -> %s%s", proposal.new_title, res.title_dir, f" ({audio_info.get('bitrate_kbps')} kbps {audio_info.get('format')})" if audio_info and audio_info.get("bitrate_kbps") else "")
         return res
 
     # -------------------------------------------------------- metadata-uppdatering (krav 34)
@@ -1038,13 +1190,28 @@ class Engine:
                         results.append(tags.WriteResult(cover_path, True, ["cover"]))
                 except Exception as exc:
                     log.warning("kunde inte hämta omslag %s: %s", cover_url, exc)
-        # uppdatera historikpost om den finns
+        # uppdatera historikpost om den finns — även ljudkvalitet (om output-filerna finns)
         try:
             key = proposal.identity()
             # hitta befintlig post via output eller nyckel
             for e in self.history.entries():
                 if e.get("output") and title_dir.startswith(e["output"]) or e.get("key") == key:
-                    self.history.add(key, title=proposal.new_title, author=proposal.new_artist, series=proposal.new_series, number=proposal.new_series_number, url=proposal.match.book.url if proposal.match else e.get("url",""), score=proposal.match.score if proposal.match else 0, source=proposal.source or "", output=title_dir, files=[f.path for f in group])
+                    audio_info2 = None
+                    try:
+                        from .history import summarize_audio_qualities as _summ3
+                        from . import audioinfo as _ai3
+                        quals2 = []
+                        for _fp in [f.path for f in group][:4]:
+                            if _fp and _os.path.exists(_fp):
+                                try:
+                                    quals2.append(_ai3.probe(_fp))
+                                except Exception:
+                                    continue
+                        if quals2:
+                            audio_info2 = _summ3(quals2)
+                    except Exception:
+                        audio_info2 = None
+                    self.history.add(key, title=proposal.new_title, author=proposal.new_artist, series=proposal.new_series, number=proposal.new_series_number, url=proposal.match.book.url if proposal.match else e.get("url",""), score=proposal.match.score if proposal.match else 0, source=proposal.source or "", output=title_dir, files=[f.path for f in group], audio=audio_info2)
                     break
         except Exception:
             pass
