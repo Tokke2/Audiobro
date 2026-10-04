@@ -1133,7 +1133,7 @@ class App:
         r2 = tk.Frame(outer, bg=outer["bg"])
         r2.pack(fill="x", padx=8, pady=2)
         ttk.Checkbutton(r2, text="Skriv serie-taggar (TXXX:SERIES)", variable=self._series).pack(side="left")
-        ttk.Checkbutton(r2, text="Lås upp via min webbläsare (Brave/Chromium) vid blockering", variable=self._auto_token).pack(side="left", padx=12)
+        ttk.Checkbutton(r2, text="Lås upp via min webbläsare (Brave/Chromium) vid blockering", variable=self._auto_token, command=self._on_auto_token_toggle if hasattr(self, "_on_auto_token_toggle") else None).pack(side="left", padx=12)
         # Rad 3: Säkerhetskopiera + Hoppa över redan klara
         r3 = tk.Frame(outer, bg=outer["bg"])
         r3.pack(fill="x", padx=8, pady=2)
@@ -1524,6 +1524,33 @@ class App:
                 LOG.info("Flytta aktiverat — filer kommer att flyttas (hash-verifierat)")
         else:
             LOG.info("Flytta avaktiverat — filer kommer att kopieras")
+
+    def _on_auto_token_toggle(self) -> None:
+        """När 'Unlock via my browser' bockas i — erbjud direkt att installera saknade Python-tillägg."""
+        try:
+            if not self._auto_token.get():
+                LOG.info("Unlock via browser avaktiverat")
+                return
+            LOG.info("Unlock via browser aktiverat — kontrollerar tillägg")
+            from . import deps
+            missing = deps.check()
+            need = [d for d in missing if d.pip_pkg]
+            # Visa installer-dialog direkt om websocket-client eller andra kritiska saknas
+            if any(d.module == "websocket" for d in missing) or any(d.name in ("requests","beautifulsoup4","lxml") for d in missing):
+                self._check_deps(manual=True)
+            elif need:
+                # Erbjud även om bara valfria saknas och auto_token behöver dem
+                self._check_deps(manual=True)
+            else:
+                # Kontrollera också om webbläsaren saknas
+                from .browser_token import find_browser
+                if not find_browser():
+                    import tkinter.messagebox as mb
+                    mb.showinfo("Webbläsare saknas", "Ingen Chromium-baserad webbläsare hittades (Brave/Chromium/Chrome/Edge).\n\nFör 'Unlock via my browser' krävs Brave, Chromium, Chrome eller Edge installerat.\nInstallera en av dem, eller använd manuell Goodreads-token.")
+                else:
+                    LOG.info("Unlock via browser — alla tillägg finns, webbläsare hittad")
+        except Exception as exc:
+            LOG.debug("_on_auto_token_toggle fel: %s", exc)
 
     def _check_deps(self, manual: bool = False) -> None:
         """100000000% bättre: erbjud att installera saknade OCH uppdatera gamla — i ETT fönster.
@@ -2983,7 +3010,18 @@ class App:
         self._log_lines: list[str] = []
         self._log_pos = 0
         self.root.after(500, self._tail_log)
-        self.root.after(900, lambda: self._check_deps(False))
+        def _startup_deps_check():
+            try:
+                # Om Unlock är ikryssad men websocket-client saknas — visa installer direkt (proffsigt)
+                if getattr(self, "_auto_token", None) and self._auto_token.get():
+                    from . import deps
+                    if any(d.module == "websocket" and not deps.is_installed(d) for d in deps.DEPS):
+                        self._check_deps(True)
+                        return
+            except Exception:
+                pass
+            self._check_deps(False)
+        self.root.after(900, _startup_deps_check)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_menubar()
         self._load_settings()
