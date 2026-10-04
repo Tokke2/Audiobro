@@ -234,7 +234,7 @@ Menu **`Remember`** lists last import/output folders + `Save settings now`. `Hel
 
 ## ❤️ Support the project — keep it free & magical
 
-**Audiobro is free, no ads, no paywall, open source.** Your donation is what keeps series matching, tagging and Goodreads support alive. You support a solo indie dev in **Kumla, Sweden** — not a company.
+**Audiobro is free, no ads, no paywall, open source.** Your donation is what keeps series matching, tagging and Goodreads support alive. You support a solo indie dev — not a company.
 
 | Way | Link |
 |-----|------|
@@ -295,7 +295,7 @@ No network needed for the suite — it replays `tests/fixtures/*.html` (search +
 
 ## Credits
 
-Built with ♥ in Kumla for audiobook lovers. Icon `assets/icon-happy.png`. Mapping verified against Audiobookshelf source. Goodreads scraping for personal metadata only — be polite (delay).
+Built with ♥ for audiobook lovers. Icon `assets/icon-happy.png`. Mapping verified against Audiobookshelf source. Goodreads scraping for personal metadata only — be polite (delay).
 
 **Questions?** Open `Help → About` in the app, or ping via PayPal/Ko-fi message — I read every one.
 
