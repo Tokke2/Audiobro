@@ -591,32 +591,55 @@ def clean_series(name: str) -> str:
     n = re.sub(r"\s+trilogy$|\s+trilogi$", "", n, flags=re.I)
     return n.strip()
 
-# --- 2026-10-04: Book friend hjärta — endast namn jag väljer, obscena bäljs bort ---
+# --- 2026-10-04: Book friend hjärta — endast namn jag väljer, obscena bäljs bort (sv + en, även enstaka ord) ---
+# Substrängar som alltid bäljs om de förekommer i namnet (svenska + engelska)
 _OBSCENE_SUBSTRINGS = {
     "cunt","pussy","dick","cock","asshole","fuck","shit","bitch","whore","slut",
     "nigger","nigga","faggot","fag ","kuk","kuken","fitta","fittan","hora","horan",
     "bög","bögj","mongo","cp ","idiot ","retard","kallad","knulla","knull",
+    "wank","wanker","twat","bollocks","arse","arsehole","douche","prick","tosser","bugger","damn","bastard",
+}
+# Enstaka engelska/svenska ord som är obscena även som ensamt namn — exakt match på hela namnet
+_OBSCENE_SINGLE_EN = {
+    "cunt","pussy","dick","cock","asshole","fuck","shit","bitch","whore","slut",
+    "wank","wanker","twat","bollocks","arse","arsehole","ass","bastard","douche",
+    "prick","tosser","bugger","nigger","nigga","faggot","fag","kuk","kuken",
+    "fitta","fittan","hora","horan","bög","mongo","cp","knulla","fuckyou","shitty",
 }
 def is_obscene_name(name: str) -> bool:
-    """True om namnet innehåller obscena ord — ska bäljas bort från release notes."""
+    """True om namnet innehåller obscena ord — ska bäljas bort från release notes.
+
+    Gäller både svenska och engelska, även enstaka ord/namn (t.ex. 'Shit', 'Dick', 'KUK').
+    """
     low = (name or "").lower()
-    # normalisera leet och ta bort accent för att fånga varianter
     low = strip_accents(low)
-    low = re.sub(r"[^a-z0-9]+", " ", low).strip()
-    # korta namn som bara är svordom
+    low_norm = re.sub(r"[^a-z0-9]+", " ", low).strip()
+    if not low_norm:
+        return False
+    # 1) Enstaka ord: exakt match mot blocklist (\"Shit\" → block, \"John\" → ok)
+    tokens = low_norm.split()
+    if len(tokens) == 1 and tokens[0] in _OBSCENE_SINGLE_EN:
+        return True
+    # 2) Substräng/blocklist — gäller även multi-word \"John Shit Doe\" eller \"FuckYou99\"
+    #    använd low_norm med mellanslag för att fånga varianter
+    low_spaced = f" {low_norm} "
     for bad in _OBSCENE_SUBSTRINGS:
         b = bad.strip()
-        if len(b) >= 2 and b in low:
-            # undvik falska positiva: \"dick\" i \"dickens\" är OK om namnet är längre och innehåller mellanslag + Dickens
-            # men \"dick\" ensamt eller som del av kort ord ska blockas
+        if len(b) >= 2 and b in low_norm:
             if b in {"ass","fag"}:
-                if re.search(rf"\b{re.escape(b)}\b", low):
+                if re.search(rf"\b{re.escape(b)}\b", low_norm):
                     return True
                 continue
-            if b == "dick" and "dickens" in low:
-                # \"Charles Dickens\" är OK
+            if b == "dick" and "dickens" in low_norm:
                 continue
+            # även enstaka svenska \"kuk\" i \"kuken\" fångas här
             return True
+        # även kolla med mellanslag för \" fag \" etc
+        if b.endswith(" ") and f" {b.strip()} " in low_spaced:
+            return True
+    # 3) Extra: enstaka engelska ordets substräng i korta namn (2-20 tecken) → blocka
+    #    för att fånga leet som \"sh1t\", \"f*ck\" redan normaliserat till \"sh t\" etc är ovan
+    #    men exakt token i _OBSCENE_SINGLE_EN räcker för \"Shit\" etc
     return False
 
 def filter_donor_names(names: list[str]) -> list[str]:
