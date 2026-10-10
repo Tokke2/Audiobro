@@ -354,6 +354,9 @@ class App:
         self._output = tk.StringVar(value=os.path.join(os.path.expanduser("~"), "audiobooks"))
         self._move = tk.BooleanVar(value=False)
         self._skip_done = tk.BooleanVar(value=True)
+        self._silent_history = tk.BooleanVar(value=True)  # tyst historik — hoppa över utan dialog (markera klar)
+        self._sort_col = None  # type: ignore
+        self._sort_reverse = False
         self._log_pos = 0
         self._recent_imports: list[str] = []
         self._recent_outputs: list[str] = []
@@ -1134,11 +1137,12 @@ class App:
         r2.pack(fill="x", padx=8, pady=2)
         ttk.Checkbutton(r2, text="Skriv serie-taggar (TXXX:SERIES)", variable=self._series).pack(side="left")
         ttk.Checkbutton(r2, text="Lås upp via min webbläsare (Brave/Chromium) vid blockering", variable=self._auto_token, command=self._on_auto_token_toggle if hasattr(self, "_on_auto_token_toggle") else None).pack(side="left", padx=12)
-        # Rad 3: Säkerhetskopiera + Hoppa över redan klara
+        # Rad 3: Säkerhetskopiera + Hoppa över redan klara + Tyst
         r3 = tk.Frame(outer, bg=outer["bg"])
         r3.pack(fill="x", padx=8, pady=2)
         ttk.Checkbutton(r3, text="Säkerhetskopiera (.agsbak)", variable=self._backup).pack(side="left")
-        ttk.Checkbutton(r3, text="Hoppa över redan klara (historik) in (jämn volym)", variable=self._skip_done).pack(side="left", padx=12)
+        ttk.Checkbutton(r3, text="Hoppa över redan klara (historik)", variable=self._skip_done).pack(side="left", padx=12)
+        ttk.Checkbutton(r3, text="Tyst — ingen fråga (markera klar)", variable=self._silent_history).pack(side="left", padx=6)
         # Rad 4: Outputmapp + Välj + Flytta + Öppna
         r4 = tk.Frame(outer, bg=outer["bg"])
         r4.pack(fill="x", padx=8, pady=4)
@@ -1255,7 +1259,8 @@ class App:
         tree_frame.grid_columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14, style="Treeview")
         for key, head, width in presenter.COLUMNS:
-            self.tree.heading(key, text=head)
+            # klickbar sortering — beställning per kolumn (tyst historik + sortering 2026-10-10)
+            self.tree.heading(key, text=head, command=lambda c=key: self._sort_by(c))
             w = width if width and width >= 50 else 80
             self.tree.column(key, width=w, anchor="w", stretch=True)
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
@@ -1837,6 +1842,7 @@ class App:
                          (self._minimize_to_tray, "minimize_to_tray"),
                          (self._notifs, "notifs"),
                          (self._skip_done, "skip_done"),
+                         (self._silent_history, "silent_history"),
                          (self._auto_token, "auto_token"), (self._move, "move")):
             if isinstance(data.get(key), bool):
                 var.set(data[key])
@@ -1902,6 +1908,7 @@ class App:
             "lang": self._lang.get(),
             "theme": self._theme.get(),
             "skip_done": self._skip_done.get(),
+            "silent_history": self._silent_history.get(),
             "auto_token": self._auto_token.get(),
             "move": self._move.get(),
             "delay": self._delay.get(),
@@ -1913,9 +1920,9 @@ class App:
         }
         settings.save(data)
         LOG.info("inställningar sparade (silent=%s): import=%r output=%r "
-                 "flytta=%s serie=%s skip_done=%s", silent,
+                 "flytta=%s serie=%s skip_done=%s silent_history=%s", silent,
                  data["import_folder"], data["output_folder"], data["move"],
-                 data["write_series"], data["skip_done"])
+                 data["write_series"], data["skip_done"], data["silent_history"])
         if not silent:
             self.set_status("Inställningar sparade.")
 
@@ -2922,6 +2929,21 @@ class App:
         (higher bitrate/codec) frågar vi om ersättning istället.
         """
         import threading
+        # Tyst läge: markera klar (historik) direkt utan dialog — önskat beteende per användare 2026-10-10
+        # Gäller endast vanliga historikträffar; bättre ljud (is_better) frågar fortfarande om ersättning
+        try:
+            _silent = bool(getattr(self, "_silent_history", None) and self._silent_history.get())
+        except Exception:
+            _silent = True
+        is_better_pre = bool(getattr(proposal, "_is_better_audio", False))
+        if _silent and not is_better_pre:
+            try:
+                title_s = proposal.new_title or proposal.audio.title or proposal.audio.group_label or "?"
+                LOG.info("historik tyst hopp — %r -> klar (historik) utan fråga", title_s)
+                # markera direkt (engine sätter också status men vi loggar här)
+            except Exception:
+                pass
+            return True
 
         ev = threading.Event()
         answer = {"skip": True}   # ingen svarar (t.ex. fönster stängt) -> hoppa över
@@ -4146,6 +4168,80 @@ class App:
             self.tree.move(iid, "", pos)
         self.proposals = [t[1] for t in items]
         self.rows = [t[2] for t in items]
+
+    def _sort_by(self, col: str) -> None:
+        """Klick på kolumnrubrik — sortera Review-tabellen efter kolumnen (2026-10-10).
+
+        Växlar fallande/stigande vid upprepat klick. Visar pil ▲/▼ i rubriken.
+        """
+        if len(self.rows) < 2:
+            return
+        # växla riktning om samma kolumn
+        if getattr(self, "_sort_col", None) == col:
+            self._sort_reverse = not bool(getattr(self, "_sort_reverse", False))
+        else:
+            self._sort_col = col
+            self._sort_reverse = False
+        rev = bool(self._sort_reverse)
+
+        def _key_for(p):
+            if col == "status":
+                # önskad ordning: matchad först, sedan klar (historik), behöver koll, ej matchad, blockerad
+                order = {"matchad": 0, "klar (historik)": 1, "klar (organiserad)": 1, "behöver koll": 2, "ej matchad": 3, "blockerad": 4, "sämre version": 5}
+                return (order.get(p.status, 9), p.status.lower())
+            if col == "label":
+                return (p.audio.group_label or p.audio.title or "").lower()
+            if col == "new_title":
+                return (p.new_title or p.audio.title or "").lower()
+            if col == "new_artist":
+                return (p.new_artist or p.audio.artist or "").lower()
+            if col == "new_album":
+                return (p.new_album or "").lower()
+            if col == "new_series":
+                return (p.new_series or "").lower()
+            if col == "new_series_number":
+                try:
+                    return float(str(p.new_series_number).strip() or "inf")
+                except Exception:
+                    return float("inf")
+            if col == "score":
+                try:
+                    return float(p.match.score) if p.match else -1.0
+                except Exception:
+                    return -1.0
+            if col == "source":
+                return (p.source or "").lower()
+            # fallback
+            return (getattr(p, col, "") or "").lower() if isinstance(getattr(p, col, ""), str) else getattr(p, col, "")
+
+        # bygg trippel för stabil sort och synk
+        items = list(zip(self.tree.get_children(), self.proposals, self.rows))
+        try:
+            items.sort(key=lambda t: _key_for(t[1]), reverse=rev)
+        except Exception as exc:
+            LOG.debug("sort fel col=%r err=%s", col, exc)
+            return
+        for pos, (iid, _p, _r) in enumerate(items):
+            try:
+                self.tree.move(iid, "", pos)
+            except Exception:
+                pass
+        self.proposals = [t[1] for t in items]
+        self.rows = [t[2] for t in items]
+        # uppdatera _iid_of förblir densamma (iid -> p id), men proposal-ordning ändrad — ingen åtgärd krävs
+        # visa pil i rubrik — behåll klickbar sortering
+        try:
+            for key, head, _w in presenter.COLUMNS:
+                arrow = " ▲" if key == col and not rev else " ▼" if key == col and rev else ""
+                clean = head
+                self.tree.heading(key, text=clean + arrow, command=lambda c=key: self._sort_by(c))
+        except Exception:
+            pass
+        LOG.info("sorterad %r %s (%d rader)", col, "fallande" if rev else "stigande", len(items))
+        try:
+            self.set_status(f"Sorterad efter {col} {'▼' if rev else '▲'}")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------- högerklick
     def _row_menu(self, event) -> None:

@@ -452,10 +452,14 @@ class Engine:
         proposal.paths = [f.path for f in group]  # type: ignore[attr-defined]
         proposal.group_size = len(group)          # type: ignore[attr-defined]
         proposal.total_size_mb = round(sum(f.size_mb or 0.0 for f in group), 1)  # type: ignore[attr-defined]
+        md_title = ""
+        clean_md = ""
+        md_series = ""
+        md_part = ""
         # 50000000%: serie/del från filnamn/mapp ("Welcome … – Book 5", "Fjällbacka 01 - Isprinsessan"
         # "Harry Potter #1 - Philosopher's Stone") - fungerar helt offline.
         hint_series, hint_part = matching.hints_for(audio)
-        # Överskriv med .md om den har serie/del (säkrare än filnamn)
+        # Överskriv med .md om den har serie/del (säkrare än filnamn) — första försök (md tom vid första läsning, fixas efter .md-läsning nedan)
         if md_series:
             hint_series = md_series
         if md_part:
@@ -531,6 +535,13 @@ class Engine:
             clean_md = ""
             md_series = ""
             md_part = ""
+        # Återöverskriv hints med .md värden nu när de är lästa (fix för ordning 2026-10-10)
+        if md_series:
+            hint_series = md_series
+        if md_part:
+            hint_part = md_part
+            # uppdatera part också om hint_part nu satt från .md
+            part = hint_part or extract_part(audio.album) or extract_part(rep.path)
         # rena titlar utan serieprefix har högsta prio — men serie-tolkad
         # titelrest och serie+nummer går före "Chapter 01"-skrot.
         clean_title = clean_title_from_hint(audio.title) or clean_title_from_hint(audio.album)
