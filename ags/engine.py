@@ -477,6 +477,38 @@ class Engine:
         # Om mappen är import-roten \"lazylibrarian\" ska den inte användas som titel
         if folder_title.lower() == "lazylibrarian":
             folder_title = ""
+        # 2026-10-05: Läs titel från .md om det finns i samma mapp (högst prio)
+        md_title = ""
+        clean_md = ""
+        try:
+            md_folder = os.path.dirname(_norm_path) or ""
+            if md_folder and os.path.isdir(md_folder):
+                for _fn in os.listdir(md_folder):
+                    if _fn.lower().endswith(".md"):
+                        _md_path = os.path.join(md_folder, _fn)
+                        try:
+                            with open(_md_path, encoding="utf-8") as _fh:
+                                for _line in _fh:
+                                    _line = _line.strip()
+                                    if _line.startswith("# "):
+                                        md_title = _line[2:].strip()
+                                        if md_title:
+                                            break
+                                    if _line.lower().startswith("- **titel:**"):
+                                        md_title = _line.split(":",1)[-1].strip(" *")
+                                        if md_title:
+                                            break
+                                if md_title:
+                                    break
+                        except Exception:
+                            continue
+                        if md_title:
+                            break
+            if md_title:
+                clean_md = clean_title_from_hint(md_title) or md_title
+        except Exception:
+            md_title = ""
+            clean_md = ""
         # rena titlar utan serieprefix har högsta prio — men serie-tolkad
         # titelrest och serie+nummer går före "Chapter 01"-skrot.
         clean_title = clean_title_from_hint(audio.title) or clean_title_from_hint(audio.album)
@@ -489,6 +521,8 @@ class Engine:
             low = (t or "").lower()
             return "chapter" in low or "kapitel" in low
         q_candidates = [
+            clean_md if clean_md and not _is_chapter_junk(clean_md) else "",
+            md_title if md_title and not _is_chapter_junk(md_title) and md_title != clean_md else "",
             _hr if _hr and not _is_chapter_junk(_hr) else "",
             hint_series and f"{hint_series} {hint_part}" if hint_series and hint_part else "",
             clean_folder if clean_folder and not _is_chapter_junk(clean_folder) else "",

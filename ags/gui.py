@@ -2838,9 +2838,9 @@ class App:
         ttk.Button(top, text=self._t("history_clear"), command=self._clear_history).pack(side="left", padx=4)
         ttk.Button(top, text=self._t("history_refresh"), command=self._start_refresh).pack(side="left", padx=12)
         ttk.Button(top, text=self._t("history_apply"), command=self._apply_refresh).pack(side="left", padx=4)
-        ttk.Label(top, text="Organiserade böcker arkiveras här — de matchas inte igen.", foreground="#5A5A72", font=("TkDefaultFont", 8, "italic")).pack(side="left", padx=8)
+        ttk.Label(top, text="Organiserade böcker arkiveras här — de matchas inte igen. (Klicka rad, Ctrl+klick för flera)", foreground="#5A5A72", font=("TkDefaultFont", 8, "italic")).pack(side="left", padx=8)
         cols = ("when", "title", "author", "series", "number", "output")
-        self.htree = ttk.Treeview(parent, columns=cols, show="headings", height=14)
+        self.htree = ttk.Treeview(parent, columns=cols, show="headings", height=14, selectmode="extended")
         for key, head, w in (("when", "Datum", 130), ("title", "Titel", 240),
                              ("author", "Författare", 160), ("series", "Serie", 140),
                              ("number", "Del", 40), ("output", "Outputmapp", 320)):
@@ -2885,10 +2885,15 @@ class App:
         LOG.info("tar bort markerad historikpost")
         sel = self._history_selected()
         if not sel:
-            messagebox.showinfo("Historik", "Markera en post först.")
+            messagebox.showinfo("Historik", "Markera en eller flera poster först.\nTips: Klicka en rad, Ctrl+klick för flera, Shift+klick för intervall.")
             return
-        if not messagebox.askyesno("Historik", f"Ta bort '{sel[0].get('title')}' ur "
-                                   "historiken? Boken kan då matchas på nytt."):
+        if len(sel) == 1:
+            msg = f"Ta bort '{sel[0].get('title')}' ur historiken? Boken kan då matchas på nytt."
+        else:
+            titles = "\n".join(f"• {e.get('title','?')} — {e.get('author','')}" for e in sel[:8])
+            more = f"\n... och {len(sel)-8} till" if len(sel) > 8 else ""
+            msg = f"Ta bort {len(sel)} markerade ur historiken?\n\n{titles}{more}\n\nDe kan då matchas på nytt."
+        if not messagebox.askyesno("Historik", msg):
             return
         from .history import History
 
@@ -2896,6 +2901,7 @@ class App:
         for e in sel:
             h.remove(e.get("key", ""))
         self._refresh_history()
+        LOG.info("tog bort %d historikposter", len(sel))
 
     def _clear_history(self) -> None:
         LOG.info("rensar hela historiken")
