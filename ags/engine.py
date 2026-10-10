@@ -455,6 +455,11 @@ class Engine:
         # 50000000%: serie/del från filnamn/mapp ("Welcome … – Book 5", "Fjällbacka 01 - Isprinsessan"
         # "Harry Potter #1 - Philosopher's Stone") - fungerar helt offline.
         hint_series, hint_part = matching.hints_for(audio)
+        # Överskriv med .md om den har serie/del (säkrare än filnamn)
+        if md_series:
+            hint_series = md_series
+        if md_part:
+            hint_part = md_part
         # part för sökning: primärt hint_part, annars lösa "Del 3" i taggar/path
         part = hint_part or extract_part(audio.album) or extract_part(rep.path)
 
@@ -477,9 +482,11 @@ class Engine:
         # Om mappen är import-roten \"lazylibrarian\" ska den inte användas som titel
         if folder_title.lower() == "lazylibrarian":
             folder_title = ""
-        # 2026-10-05: Läs titel från .md om det finns i samma mapp (högst prio)
+        # 2026-10-05: Läs titel/serie/del från .md om det finns i samma mapp (högst prio)
         md_title = ""
         clean_md = ""
+        md_series = ""
+        md_part = ""
         try:
             md_folder = os.path.dirname(_norm_path) or ""
             if md_folder and os.path.isdir(md_folder):
@@ -492,12 +499,21 @@ class Engine:
                                     _line = _line.strip()
                                     if _line.startswith("# "):
                                         md_title = _line[2:].strip()
-                                        if md_title:
-                                            break
-                                    if _line.lower().startswith("- **titel:**"):
+                                    elif _line.lower().startswith("- **titel:**"):
                                         md_title = _line.split(":",1)[-1].strip(" *")
-                                        if md_title:
-                                            break
+                                    elif _line.lower().startswith("- **serie:**"):
+                                        raw = _line.split(":",1)[-1].strip(" *")
+                                        # Format: "Jack Reacher #1" eller "Jack Reacher"
+                                        if "#" in raw:
+                                            md_series = raw.split("#")[0].strip()
+                                            md_part = raw.split("#")[-1].strip().split()[0]
+                                        else:
+                                            md_series = raw.strip()
+                                    elif _line.lower().startswith("- **del") or _line.lower().startswith("- **part"):
+                                        md_part = _line.split(":",1)[-1].strip(" *").split()[0]
+                                    if md_title and md_series:
+                                        # Har båda, kan fortsätta men bryt inte för tidigt — läs klart md_part också
+                                        pass
                                 if md_title:
                                     break
                         except Exception:
@@ -506,9 +522,15 @@ class Engine:
                             break
             if md_title:
                 clean_md = clean_title_from_hint(md_title) or md_title
+            if md_series:
+                md_series = md_series.strip()
+            if md_part:
+                md_part = md_part.strip().split()[0]
         except Exception:
             md_title = ""
             clean_md = ""
+            md_series = ""
+            md_part = ""
         # rena titlar utan serieprefix har högsta prio — men serie-tolkad
         # titelrest och serie+nummer går före "Chapter 01"-skrot.
         clean_title = clean_title_from_hint(audio.title) or clean_title_from_hint(audio.album)
