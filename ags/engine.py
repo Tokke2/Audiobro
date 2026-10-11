@@ -28,6 +28,336 @@ from .text import (
     title_similarity,
 )
 
+# --- 2026-10-11: bättre mapp/info-tolkning + serieindelning (även Honorverse HH04) ---------
+INFO_FILE_PATTERNS = (".md", ".txt", ".nfo", ".opf", ".json", ".xml", ".yml", ".yaml", ".ini", ".cue")
+INFO_FIELD_RE = re.compile(r"(?i)(?:^|\b)(?:titel|title|boktitel|book title)\s*[:=]\s*(.+)$")
+INFO_AUTHOR_RE = re.compile(r"(?i)(?:^|\b)(?:f[öo]rfattare|author|artist|writer)\s*[:=]\s*(.+)$")
+INFO_SERIE_RE = re.compile(r"(?i)(?:^|\b)(?:serie|series|serienamn)\s*[:=]\s*(.+)$")
+INFO_DEL_RE = re.compile(r"(?i)(?:^|\b)(?:del|part|bok|book|band|volume|vol\.?|nr\.?)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?|[ivxlc]+)\b")
+XML_TITLE_RE = re.compile(r"<dc:title[^>]*>(.*?)</dc:title>", re.I | re.S)
+XML_AUTHOR_RE = re.compile(r"<dc:creator[^>]*>(.*?)</dc:creator>", re.I | re.S)
+XML_SERIES_RE = re.compile(r'<meta[^>]*name=["\']calibre:series["\'][^>]*content=["\']([^"\']+)["\']', re.I)
+XML_SERIES_IDX_RE = re.compile(r'<meta[^>]*name=["\']calibre:series_index["\'][^>]*content=["\']([^"\']+)["\']', re.I)
+JSON_TITLE_KEYS = {"title", "book_title", "titel"}
+JSON_AUTHOR_KEYS = {"author", "authors", "writer", "forfattare"}
+JSON_SERIES_KEYS = {"series", "serie", "serienamn", "collection"}
+
+def _strip_info_val(s: str) -> str:
+    if not s:
+        return ""
+    s = s.strip(" \t\r\n'\"*`")
+    s = re.sub(r"\s*\(.*?\)\s*$", "", s).strip()
+    s = re.sub(r"\s*\[.*?\]\s*$", "", s).strip()
+    return s.strip()
+
+def _extract_from_info_text(text: str) -> dict:
+    out = {}
+    if not text or len(text) > 200000:
+        return out
+    tstrip = text.strip()
+    if tstrip.startswith("{") and tstrip.endswith("}"):
+        try:
+            import json as _js
+            data = _js.loads(tstrip)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    lk = str(k).lower()
+                    vs = str(v).strip() if v else ""
+                    if lk in JSON_TITLE_KEYS and vs and "title" not in out:
+                        out["title"] = _strip_info_val(vs)
+                    if lk in JSON_AUTHOR_KEYS and vs and "author" not in out:
+                        out["author"] = _strip_info_val(vs.split(",")[0] if isinstance(v, str) else str(v))
+                    if lk in JSON_SERIES_KEYS and vs and "series" not in out:
+                        out["series"] = _strip_info_val(vs)
+                    if lk in {"part", "del", "volume", "series_index", "number"} and vs and "part" not in out:
+                        out["part"] = _strip_info_val(vs.split()[0])
+                if out:
+                    return out
+        except Exception:
+            pass
+    if "<dc:title" in text:
+        m = XML_TITLE_RE.search(text)
+        if m and m.group(1).strip():
+            out["title"] = _strip_info_val(re.sub(r"<[^>]+>", "", m.group(1)))
+        m = XML_AUTHOR_RE.search(text)
+        if m and m.group(1).strip():
+            out["author"] = _strip_info_val(re.sub(r"<[^>]+>", "", m.group(1)))
+        m = XML_SERIES_RE.search(text)
+        if m and m.group(1).strip():
+            out["series"] = _strip_info_val(m.group(1))
+        m = XML_SERIES_IDX_RE.search(text)
+        if m and m.group(1).strip():
+            out["part"] = _strip_info_val(m.group(1).split()[0])
+        if out:
+            return out
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or len(line) > 300:
+            continue
+        m = INFO_FIELD_RE.search(line)
+        if m and not out.get("title"):
+            out["title"] = _strip_info_val(m.group(1))
+            continue
+        m = INFO_AUTHOR_RE.search(line)
+        if m and not out.get("author"):
+            out["author"] = _strip_info_val(m.group(1).split("—")[0].split("-")[0].strip())
+            continue
+        m = INFO_SERIE_RE.search(line)
+        if m and not out.get("series"):
+            raw = _strip_info_val(m.group(1))
+            if "#" in raw:
+                out["series"] = raw.split("#")[0].strip()
+                if not out.get("part"):
+                    out["part"] = raw.split("#")[-1].strip().split()[0]
+            else:
+                out["series"] = raw
+            continue
+        m = INFO_DEL_RE.search(line)
+        if m and not out.get("part"):
+            out["part"] = _strip_info_val(m.group(1))
+            continue
+        if not out.get("title") and line.startswith("# "):
+            cand = line[2:].strip()
+            if 3 <= len(cand) <= 120 and not looks_like_junk_title(cand):
+                out["title"] = cand
+    return out
+
+def _read_extra_info_files(group) -> dict:
+    folders = set()
+    for af in group:
+        try:
+            d = os.path.dirname((af.path or "").replace("\\", "/"))
+            if d:
+                folders.add(d)
+                par = os.path.dirname(d)
+                if par and par not in folders:
+                    folders.add(par)
+        except Exception:
+            continue
+    try:
+        if group and group[0].path:
+            base = os.path.dirname(group[0].path.replace("\\", "/"))
+            if base:
+                folders.add(base)
+    except Exception:
+        pass
+    best = {}
+    for folder in list(folders)[:4]:
+        if not folder or not os.path.isdir(folder):
+            continue
+        try:
+            for fn in os.listdir(folder):
+                low = fn.lower()
+                if not low.endswith(INFO_FILE_PATTERNS):
+                    continue
+                if low.endswith((".mp3",".m4b",".m4a",".flac",".ogg",".opus")):
+                    continue
+                fp = os.path.join(folder, fn)
+                if not os.path.isfile(fp):
+                    continue
+                try:
+                    if os.path.getsize(fp) > 500000:
+                        continue
+                    with open(fp, encoding="utf-8", errors="ignore") as fh:
+                        txt = fh.read(30000)
+                    info = _extract_from_info_text(txt)
+                    if info:
+                        for k, v in info.items():
+                            if v and k not in best:
+                                best[k] = v
+                        if best.get("title") and best.get("author"):
+                            return best
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return best
+
+def _extract_from_path_hierarchy(path: str) -> dict:
+    """Plocka author/serie/titel ur mapp-hierarkin — robust för 'Författare/Serie/Bok' etc."""
+    out = {}
+    if not path:
+        return out
+    norm_path = path.replace("\\", "/")
+    parts = [p.strip() for p in norm_path.split("/") if p.strip()]
+    if not parts:
+        return out
+    fname = os.path.splitext(parts[-1])[0] if "." in parts[-1] else ""
+    folders = parts[:-1]
+    leaf = folders[-1] if folders else ""
+    # Om leaf är Disc/CD-mapp, använd föräldern
+    try:
+        if leaf and __import__("re").search(r"\b(?:disc|cd|skiva)\s*[-.]?\s*[0-9]{1,2}\b", leaf, __import__("re").I):
+            if len(folders) >= 2:
+                leaf = folders[-2]
+    except Exception:
+        pass
+    def _is_author_like(s: str) -> bool:
+        if not s or any(ch.isdigit() for ch in s):
+            return False
+        low = s.lower()
+        if low in {"honorverse", "fjällbacka", "fjallbacka", "honor harrington", "saganami"}:
+            return False
+        try:
+            from .matching import _looks_like_person_name as _isn
+            if _isn(s):
+                if len(s.split()) == 1:
+                    return False
+                return True
+            return False
+        except Exception:
+            return False
+    leaf_has_author = False
+    tmp_leaf = leaf.replace(" – ", " - ").replace(" — ", " - ")
+    lp_leaf = [x.strip() for x in tmp_leaf.split(" - ") if x.strip()] if " - " in tmp_leaf else []
+    if lp_leaf and len(lp_leaf) >= 2 and _is_author_like(lp_leaf[0]):
+        leaf_has_author = True
+    if not leaf_has_author:
+        try:
+            ser_full, num_full, rest_full = parse_series_hint(leaf)
+            if ser_full or num_full:
+                if ser_full and not out.get("series"):
+                    out["series"] = ser_full
+                if num_full and not out.get("part"):
+                    out["part"] = num_full
+                if rest_full and not out.get("title"):
+                    out["title"] = rest_full
+        except Exception:
+            pass
+        if not out.get("part"):
+            try:
+                pp = extract_part(leaf)
+                if pp:
+                    out["part"] = pp
+            except Exception:
+                pass
+    if leaf_has_author and lp_leaf:
+        if len(lp_leaf) == 2:
+            a, b = lp_leaf[0], lp_leaf[1]
+            if not out.get("author"):
+                out["author"] = a
+            ser_b, num_b, rest_b = parse_series_hint(b)
+            if ser_b or num_b:
+                if ser_b and not out.get("series"):
+                    out["series"] = ser_b
+                if num_b and not out.get("part"):
+                    out["part"] = num_b
+                if rest_b and not out.get("title"):
+                    out["title"] = rest_b
+            else:
+                if not out.get("title"):
+                    out["title"] = b
+        elif len(lp_leaf) >= 3:
+            a = lp_leaf[0]
+            b = lp_leaf[1]
+            c = " - ".join(lp_leaf[2:])
+            if not out.get("author"):
+                out["author"] = a
+            ser, num, rest = parse_series_hint(b)
+            if ser or num:
+                if ser and not out.get("series"):
+                    out["series"] = ser
+                if num and not out.get("part"):
+                    out["part"] = num
+                if c and not out.get("title"):
+                    out["title"] = c
+                elif rest and not out.get("title"):
+                    out["title"] = rest
+            else:
+                if c and not out.get("title"):
+                    out["title"] = c
+                # Fallback för "Fjällbacka 02" utan dash — extrahera serie+nummer
+                if not out.get("series") or not out.get("part"):
+                    try:
+                        # Försök tolka b som "Serie 02"
+                        m_fb = re.match(r"^(?P<series>.+?)\s+0*(?P<num>[0-9]{1,2})\s*$", b)
+                        if m_fb:
+                            ser_fb = m_fb.group("series").strip()
+                            num_fb = m_fb.group("num").strip()
+                            if ser_fb and num_fb:
+                                if not out.get("series"):
+                                    out["series"] = ser_fb
+                                if not out.get("part"):
+                                    out["part"] = num_fb
+                    except Exception:
+                        pass
+                if not out.get("series") and b and len(b) >= 3 and not _is_author_like(b):
+                    try:
+                        from .text import _looks_like_series_name
+                        if _looks_like_series_name(b):
+                            # undvik att sätta "Fjällbacka 02" som serie — redan hanterat ovan
+                            if b.strip() != out.get("series", "") + " " + out.get("part", ""):
+                                out["series"] = b
+                    except Exception:
+                        pass
+    for folder in reversed(folders):
+        if folder == leaf and leaf_has_author:
+            continue
+        # Hoppa över Disc/CD-mappar helt
+        if re.search(r"\b(?:disc|cd|skiva)\s*[-.]?\s*[0-9]{1,2}\b", folder, re.I):
+            continue
+        ser, num, rest = parse_series_hint(folder)
+        if ser or num:
+            if ser and not out.get("series"):
+                out["series"] = ser
+            if num and not out.get("part"):
+                out["part"] = num
+            if rest and not out.get("title"):
+                out["title"] = rest
+        if not out.get("part"):
+            pp = extract_part(folder)
+            if pp:
+                out["part"] = pp
+    if not out.get("author"):
+        try:
+            from .matching import _looks_like_person_name, guess_author_from_path
+            ga = guess_author_from_path(norm_path)
+            if ga and _looks_like_person_name(ga) and not any(ch.isdigit() for ch in ga):
+                if ga.lower() not in {"honorverse", "fiction", "science fiction", "ljudböcker", "audiobooks", "books", "böcker"}:
+                    out["author"] = ga
+            if not out.get("author"):
+                for f in reversed(folders):
+                    if _is_author_like(f):
+                        if f.lower() not in {"ljudböcker","audiobooks","books","böcker","honorverse","fiction","science fiction","audio","media"}:
+                            out["author"] = f
+                            break
+        except Exception:
+            pass
+    if not out.get("title") and fname:
+        if not looks_like_junk_title(fname) and not re.match(r"^(?:track|spår|disc|cd)\s*\d", fname, re.I):
+            ct = clean_title_from_hint(fname)
+            if ct and ct != fname and len(ct) >= 3:
+                out["title"] = ct
+            elif fname and len(fname) >= 5 and not re.match(r"^\d+$", fname):
+                if len(fname.split()) >= 2 or len(fname) >= 8:
+                    out["title"] = fname
+    try:
+        low_parts = [p.lower() for p in folders]
+        if "honorverse" in low_parts:
+            cur_series_low = (out.get("series") or "").lower()
+            if not out.get("series") or cur_series_low in {"honorverse", ""}:
+                if out.get("series", "").lower() not in {"honor harrington", "saganami"}:
+                    out["series"] = "Honor Harrington"
+            if not out.get("author"):
+                hv_idx = low_parts.index("honorverse")
+                if hv_idx > 0:
+                    cand_auth = folders[hv_idx-1]
+                    if _is_author_like(cand_auth):
+                        out["author"] = cand_auth
+                if not out.get("author"):
+                    out["author"] = "David Weber"
+    except Exception:
+        pass
+    cleaned = {}
+    for k, v in out.items():
+        if v and isinstance(v, str) and v.strip():
+            vv = v.strip()
+            if k == "title" and looks_like_junk_title(vv) and len(vv) < 6:
+                continue
+            cleaned[k] = vv
+    return cleaned
+
+
 
 @dataclass
 class EngineOptions:
@@ -542,6 +872,34 @@ class Engine:
             hint_part = md_part
             # uppdatera part också om hint_part nu satt från .md
             part = hint_part or extract_part(audio.album) or extract_part(rep.path)
+        # 2026-10-11: läs extra info-filer (txt/nfo/opf/json/xml) och mapp-hierarki — prio: info-fil > mapp > md > filtagg
+        extra_info = {}
+        path_info = {}
+        try:
+            extra_info = _read_extra_info_files(group)
+            path_info = _extract_from_path_hierarchy(rep.path)
+            merged = {}
+            for src in (path_info, extra_info):
+                for k, v in src.items():
+                    if v and v.strip() and k not in merged:
+                        merged[k] = v.strip()
+                    elif v and v.strip() and k in merged and not merged[k]:
+                        merged[k] = v.strip()
+            if merged.get("series"):
+                hint_series = merged["series"]
+            if merged.get("part"):
+                hint_part = merged["part"]
+                part = hint_part or extract_part(audio.album) or extract_part(rep.path)
+            if merged.get("author"):
+                cur_auth = (audio.artist or "").strip()
+                if not cur_auth or looks_like_junk_title(cur_auth) or cur_auth.lower() in {"unknown","unknown artist","various","okänd"}:
+                    audio.artist = merged["author"]
+            extra_info = merged
+            if merged:
+                log.debug("extra mapp/info för %r: %r", rep.path, merged)
+        except Exception as exc:
+            log.debug("extra info/path fel för %r: %s", rep.path, exc)
+            extra_info = {}
         # rena titlar utan serieprefix har högsta prio — men serie-tolkad
         # titelrest och serie+nummer går före "Chapter 01"-skrot.
         clean_title = clean_title_from_hint(audio.title) or clean_title_from_hint(audio.album)
@@ -553,7 +911,17 @@ class Engine:
         def _is_chapter_junk(t: str) -> bool:
             low = (t or "").lower()
             return "chapter" in low or "kapitel" in low
+        _extra_raw = ""
+        _extra_clean = ""
+        try:
+            _extra_raw = (extra_info.get("title") or "").strip() if isinstance(extra_info, dict) else ""
+            if _extra_raw:
+                _extra_clean = clean_title_from_hint(_extra_raw) or _extra_raw
+        except Exception:
+            _extra_raw, _extra_clean = "", ""
         q_candidates = [
+            _extra_clean if _extra_clean and not _is_chapter_junk(_extra_clean) else "",
+            _extra_raw if _extra_raw and not _is_chapter_junk(_extra_raw) and _extra_raw != _extra_clean else "",
             clean_md if clean_md and not _is_chapter_junk(clean_md) else "",
             md_title if md_title and not _is_chapter_junk(md_title) and md_title != clean_md else "",
             _hr if _hr and not _is_chapter_junk(_hr) else "",
