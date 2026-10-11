@@ -173,6 +173,61 @@ def _read_extra_info_files(group) -> dict:
             continue
     return best
 
+def _parse_trailing_series(text: str) -> tuple[str, str, str]:
+    """Tolka 'One Shot Jack Reacher 09' -> ('One Shot','Jack Reacher','09') - aven for lazylibrarian."""
+    if not text or len(text) > 200:
+        return "", "", ""
+    import re as _re
+    t = text.strip()
+    t = _re.sub(r"\s*\((?:Unabridged|Abridged|Complete|Uncut|Unabridged[^)]*)\)\s*", " ", t, flags=_re.I).strip()
+    t = _re.sub(r"\s+", " ", t).strip()
+    try:
+        from .text import parse_series_hint as _psh
+        ser, num, rest = _psh(t)
+        if ser or num:
+            return ser, num, rest
+    except Exception:
+        pass
+    words = t.split()
+    if len(words) >= 3 and words[-1].isdigit():
+        num_cand = words[-1].lstrip("0") or "0"
+        candidates = []
+        for ser_len in (2, 1, 3):
+            if len(words) < ser_len + 2:
+                continue
+            series_cand = " ".join(words[-(ser_len+1):-1])
+            title_cand = " ".join(words[:-(ser_len+1)])
+            if not title_cand or not series_cand:
+                continue
+            if len(series_cand) < 3:
+                continue
+            if not _re.match(r"^[A-ZÅÄÖ]", series_cand):
+                continue
+            if len(series_cand) > 30:
+                continue
+            if series_cand.lower() in title_cand.lower():
+                continue
+            if len(title_cand) < 2:
+                continue
+            candidates.append((ser_len, series_cand, title_cand))
+        known = {"jack reacher", "honor harrington", "fjällbacka", "fjallbacka", "saganami", "manticore"}
+        for ser_len, series_cand, title_cand in candidates:
+            if series_cand.lower() in known:
+                return series_cand, num_cand, title_cand
+        for ser_len, series_cand, title_cand in candidates:
+            try:
+                from .text import _looks_like_series_name
+                if _looks_like_series_name(series_cand):
+                    return series_cand, num_cand, title_cand
+            except Exception:
+                pass
+        for ser_len, series_cand, title_cand in candidates:
+            if len(series_cand.split()) >= 1 and series_cand[0].isupper():
+                if series_cand.lower() in {"jack reacher", "honor harrington", "fjällbacka", "fjallbacka"} or len(series_cand.split()) == 2:
+                    return series_cand, num_cand, title_cand
+    return "", "", ""
+
+
 def _extract_from_path_hierarchy(path: str) -> dict:
     """Plocka author/serie/titel ur mapp-hierarkin — robust för 'Författare/Serie/Bok' etc."""
     out = {}
@@ -182,8 +237,21 @@ def _extract_from_path_hierarchy(path: str) -> dict:
     parts = [p.strip() for p in norm_path.split("/") if p.strip()]
     if not parts:
         return out
-    fname = os.path.splitext(parts[-1])[0] if "." in parts[-1] else ""
-    folders = parts[:-1]
+    # Avgor om sista delen ar fil (med ljud-andelse) eller mapp (lazylibrarian folder utan fil)
+    last = parts[-1]
+    is_file = False
+    if "." in last:
+        ext = __import__("os").path.splitext(last)[1].lower()
+        if ext in {".mp3",".m4b",".m4a",".flac",".ogg",".opus",".aac",".wav",".wma",".aiff"}:
+            is_file = True
+        elif len(ext) >= 2 and len(ext) <= 5 and " - " not in last and len(last) < 60:
+            is_file = True
+    if is_file:
+        fname = __import__("os").path.splitext(last)[0]
+        folders = parts[:-1]
+    else:
+        fname = ""
+        folders = parts
     leaf = folders[-1] if folders else ""
     # Om leaf är Disc/CD-mapp, använd föräldern
     try:
@@ -251,45 +319,97 @@ def _extract_from_path_hierarchy(path: str) -> dict:
             a = lp_leaf[0]
             b = lp_leaf[1]
             c = " - ".join(lp_leaf[2:])
-            if not out.get("author"):
-                out["author"] = a
-            ser, num, rest = parse_series_hint(b)
-            if ser or num:
-                if ser and not out.get("series"):
-                    out["series"] = ser
-                if num and not out.get("part"):
-                    out["part"] = num
-                if c and not out.get("title"):
-                    out["title"] = c
-                elif rest and not out.get("title"):
-                    out["title"] = rest
-            else:
-                if c and not out.get("title"):
-                    out["title"] = c
-                # Fallback för "Fjällbacka 02" utan dash — extrahera serie+nummer
-                if not out.get("series") or not out.get("part"):
+            # Lazylibrarian year-fall: "Lee Child - 2005 - One Shot (Unabridged) Jack Reacher 09"
+            import re as _re_year_fix
+            _is_year_fix = bool(_re_year_fix.match(r"^\d{4}$", b.strip()))
+            handled_year = False
+            if _is_year_fix:
+                if not out.get("author"):
+                    out["author"] = a
+                try:
+                    ser_c, num_c, rest_c = _parse_trailing_series(c)
+                except Exception:
+                    ser_c, num_c, rest_c = "", "", ""
+                if ser_c or num_c:
+                    if ser_c and not out.get("series"):
+                        out["series"] = ser_c
+                    if num_c and not out.get("part"):
+                        out["part"] = num_c
+                    if rest_c and not out.get("title"):
+                        out["title"] = rest_c
+                    handled_year = True
+                else:
                     try:
-                        # Försök tolka b som "Serie 02"
-                        m_fb = re.match(r"^(?P<series>.+?)\s+0*(?P<num>[0-9]{1,2})\s*$", b)
-                        if m_fb:
-                            ser_fb = m_fb.group("series").strip()
-                            num_fb = m_fb.group("num").strip()
-                            if ser_fb and num_fb:
-                                if not out.get("series"):
-                                    out["series"] = ser_fb
-                                if not out.get("part"):
-                                    out["part"] = num_fb
+                        ser2, num2, rest2 = parse_series_hint(c)
                     except Exception:
-                        pass
-                if not out.get("series") and b and len(b) >= 3 and not _is_author_like(b):
-                    try:
-                        from .text import _looks_like_series_name
-                        if _looks_like_series_name(b):
-                            # undvik att sätta "Fjällbacka 02" som serie — redan hanterat ovan
-                            if b.strip() != out.get("series", "") + " " + out.get("part", ""):
-                                out["series"] = b
-                    except Exception:
-                        pass
+                        ser2, num2, rest2 = "", "", ""
+                    if ser2 or num2:
+                        if ser2 and not out.get("series"):
+                            out["series"] = ser2
+                        if num2 and not out.get("part"):
+                            out["part"] = num2
+                        if rest2 and not out.get("title"):
+                            out["title"] = rest2
+                        elif c and not out.get("title"):
+                            out["title"] = c
+                        handled_year = True
+                    else:
+                        if c and not out.get("title"):
+                            import re as _re2c
+                            tmp_c2 = _re2c.sub(r"\s*\((?:Unabridged|Abridged|Complete|Uncut)[^)]*\)", " ", c, flags=_re2c.I).strip()
+                            try:
+                                ser3, num3, rest3 = _parse_trailing_series(tmp_c2)
+                                if ser3 or num3:
+                                    if ser3 and not out.get("series"):
+                                        out["series"] = ser3
+                                    if num3 and not out.get("part"):
+                                        out["part"] = num3
+                                    if rest3 and not out.get("title"):
+                                        out["title"] = rest3
+                                    handled_year = True
+                                else:
+                                    out["title"] = c
+                                    handled_year = True
+                            except Exception:
+                                out["title"] = c
+                                handled_year = True
+            if not handled_year:
+                if not out.get("author"):
+                    out["author"] = a
+                ser, num, rest = parse_series_hint(b)
+                if ser or num:
+                    if ser and not out.get("series"):
+                        out["series"] = ser
+                    if num and not out.get("part"):
+                        out["part"] = num
+                    if c and not out.get("title"):
+                        out["title"] = c
+                    elif rest and not out.get("title"):
+                        out["title"] = rest
+                else:
+                    if c and not out.get("title"):
+                        out["title"] = c
+                    if not out.get("series") or not out.get("part"):
+                        try:
+                            m_fb = re.match(r"^(?P<series>.+?)\s+0*(?P<num>[0-9]{1,2})\s*$", b)
+                            if m_fb:
+                                ser_fb = m_fb.group("series").strip()
+                                num_fb = m_fb.group("num").strip()
+                                if ser_fb and num_fb:
+                                    if not out.get("series"):
+                                        out["series"] = ser_fb
+                                    if not out.get("part"):
+                                        out["part"] = num_fb
+                        except Exception:
+                            pass
+                    if not out.get("series") and b and len(b) >= 3 and not _is_author_like(b):
+                        try:
+                            from .text import _looks_like_series_name
+                            if _looks_like_series_name(b):
+                                if b.strip() != out.get("series", "") + " " + out.get("part", ""):
+                                    out["series"] = b
+                        except Exception:
+                            pass
     for folder in reversed(folders):
         if folder == leaf and leaf_has_author:
             continue
