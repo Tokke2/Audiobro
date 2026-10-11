@@ -312,6 +312,12 @@ def execute(proposal: Proposal, group: list[AudioFile], out_root: str,
     if md_action and not res.errors:
         written = [a.dst for a in file_actions]
         qualities = [audioinfo.probe(p) for p in written]
+        # Upptack Utgava (Unabridged/Abridged) fran kallsokvagar - ska med i md men ignoreras vid matchning
+        try:
+            _paths_for_edition = [getattr(f, "path", "") for f in group] + [getattr(proposal.audio, "path", "")]
+            edition = audioinfo._detect_edition(_paths_for_edition)
+        except Exception:
+            edition = ""
         md = audioinfo.book_md(
             title=proposal.new_title or proposal.audio.album,
             author=proposal.new_artist,
@@ -330,6 +336,7 @@ def execute(proposal: Proposal, group: list[AudioFile], out_root: str,
             genre=proposal.new_genre,
             language=proposal.new_language,
             description=proposal.new_description,
+            edition=edition,
         )
         try:
             with open(md_action.dst, "w", encoding="utf-8") as fh:

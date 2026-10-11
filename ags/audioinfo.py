@@ -211,6 +211,41 @@ def replaygain(path: str) -> tuple[str | None, str | None]:
         return (None, None)
 
 
+def _edition_label(raw: str) -> str:
+    """Översätt edition-markör till svenska men behall original."""
+    if not raw:
+        return ""
+    low = raw.lower()
+    if "unabridged" in low and "abridged" in low:
+        # t.ex. Unabridged star fore Abridged — prioritera Unabridged
+        if low.find("unabridged") < low.find("abridged"):
+            return "Oavkortad (Unabridged) – komplett inläsning"
+        return "Förkortad (Abridged) – förkortad utgåva"
+    if "unabridged" in low:
+        return "Oavkortad (Unabridged) – komplett inläsning"
+    if "abridged" in low:
+        return "Förkortad (Abridged) – förkortad utgåva"
+    if "complete" in low:
+        return "Komplett (Complete) – oavkortad"
+    if "uncut" in low:
+        return "Oklippt (Uncut) – oavkortad"
+    if "unabridged" in low or "abridged" in low:
+        return raw.strip()
+    return raw.strip()
+
+def _detect_edition(paths: list[str]) -> str:
+    """Kolla om nagon kallsokvag innehaller (Unabridged)/(Abridged) etc."""
+    import re
+    pat = re.compile(r"\((?:Unabridged|Abridged|Complete|Uncut)(?:[^)]*)?\)", re.I)
+    for p in paths or []:
+        if not p:
+            continue
+        m = pat.search(p)
+        if m:
+            raw = m.group(0).strip("() ")
+            return _edition_label(raw)
+    return ""
+
 def book_md(
     title: str,
     author: str,
@@ -229,6 +264,7 @@ def book_md(
     genre: str = "",
     language: str = "",
     description: str = "",
+    edition: str = "",
 ) -> str:
     """Markdown-faktablad som läggs bredvid ljudfilerna i outputmappen."""
     total_s = sum(q.duration_s for q in qualities)
@@ -244,6 +280,7 @@ def book_md(
         f"- **Förlag:** {publisher}" if publisher else "",
         f"- **Genre:** {genre}" if genre else "",
         f"- **Språk:** {language}" if language else "",
+        f"- **Utgåva:** {edition}" if edition else "",
         f"- **Album:** {album}" if album else "",
         f"- **Serie:** {series}" + (f" #{series_number}" if series_number else "") if series else "",
         f"- **Först utgiven:** {year}" if year else "",

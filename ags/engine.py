@@ -1694,6 +1694,31 @@ class Engine:
         md_path = _os.path.join(title_dir, new_md_name)
         try:
             quals = [audioinfo.probe(f.path) for f in ordered]
+            # Upptack Utgava fran gruppens sokvagar (ignoreras vid matchning, sparas i md)
+            try:
+                _paths_for_edition2 = [getattr(f, "path", "") for f in ordered] + [getattr(proposal.audio, "path", "")]
+                edition2 = audioinfo._detect_edition(_paths_for_edition2)
+                # Fallback: om redan organiserad - kolla befintlig .md
+                if not edition2 and md_files:
+                    import re as _re_ed
+                    for _old_md in md_files:
+                        _old_path = _os.path.join(title_dir, _old_md)
+                        try:
+                            _old_txt = open(_old_path, encoding="utf-8", errors="ignore").read(2000)
+                            if "Utgåva" in _old_txt:
+                                m_ed = _re_ed.search(r"Utgåva[^:]*:\s*\*\*\s*([^\n]+)", _old_txt)
+                                if m_ed:
+                                    edition2 = m_ed.group(1).strip()
+                                    break
+                            if "(Unabridged)" in _old_txt or "(Abridged)" in _old_txt:
+                                m2 = _re_ed.search(r"\((?:Unabridged|Abridged|Complete|Uncut)[^)]*\)", _old_txt, _re_ed.I)
+                                if m2:
+                                    edition2 = audioinfo._edition_label(m2.group(0).strip("() "))
+                                    break
+                        except Exception:
+                            pass
+            except Exception:
+                edition2 = ""
             md = audioinfo.book_md(
                 title=proposal.new_title or proposal.audio.title,
                 author=proposal.new_artist,
@@ -1712,6 +1737,7 @@ class Engine:
                 genre=proposal.new_genre,
                 language=proposal.new_language,
                 description=proposal.new_description,
+                edition=edition2,
             )
             with open(md_path, "w", encoding="utf-8") as fh:
                 fh.write(md)
